@@ -2,14 +2,16 @@
 """
 YouTube to SRT Transcription Tool
 MVP Stage 1: Validate and download audio from YouTube
+MVP Stage 2: Split audio into chunks (~30 minutes each)
 """
 
 import re
 import subprocess
 import sys
 import argparse
+import json
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, List
 
 
 def validate_youtube_url(url: str) -> bool:
@@ -139,6 +141,123 @@ def download_audio(url: str, output_dir: str = ".") -> Tuple[bool, str, str]:
         return False, f"Błąd przy pobieraniu: {str(e)}", ""
 
 
+def get_audio_duration(wav_path: str) -> Tuple[bool, float]:
+    """
+    Get the duration of an audio file in seconds using ffprobe.
+
+    Args:
+        wav_path: Path to the WAV file
+
+    Returns:
+        Tuple of (success: bool, duration_seconds: float)
+    """
+    try:
+        probe_cmd = [
+            'ffprobe',
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            str(wav_path)
+        ]
+
+        result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
+
+        if result.returncode != 0:
+            return False, 0.0
+
+        try:
+            duration = float(result.stdout.strip())
+            return True, duration
+        except ValueError:
+            return False, 0.0
+
+    except subprocess.TimeoutExpired:
+        return False, 0.0
+    except Exception as e:
+        print(f"Błąd przy odczytaniu długości audio: {str(e)}")
+        return False, 0.0
+
+
+def split_audio(wav_path: str, chunk_duration_sec: int = 1800, output_dir: str = ".") -> Tuple[bool, str, List[str]]:
+    """
+    Split a WAV audio file into chunks of specified duration.
+
+    Args:
+        wav_path: Path to the input WAV file
+        chunk_duration_sec: Duration of each chunk in seconds (default: 1800 = 30 minutes)
+        output_dir: Directory to save the chunks
+
+    Returns:
+        Tuple of (success: bool, message: str, chunk_paths: List[str])
+    """
+    try:
+        wav_file = Path(wav_path)
+        if not wav_file.exists():
+            return False, f"Błąd: Plik audio nie istnieje: {wav_path}", []
+
+        # Get audio duration
+        success, duration = get_audio_duration(wav_path)
+        if not success:
+            return False, "Błąd: Nie można odczytać długości audio", []
+
+        if duration == 0:
+            return False, "Błąd: Audio jest puste (duration = 0)", []
+
+        print(f"Długość audio: {duration:.1f} sekund ({duration/60:.1f} minut)")
+
+        # If audio is shorter than chunk duration, return the original file
+        if duration <= chunk_duration_sec:
+            print(f"Audio krótsze niż {chunk_duration_sec} sekund - brak podziału")
+            return True, "Audio nie wymaga podziału", [str(wav_path)]
+
+        # Create output directory for chunks
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        # Calculate number of chunks needed
+        num_chunks = (int(duration) + chunk_duration_sec - 1) // chunk_duration_sec
+        print(f"Dzielenie audio na {num_chunks} chunki po {chunk_duration_sec} sekund...")
+
+        chunk_paths = []
+        stem = wav_file.stem
+
+        for i in range(num_chunks):
+            chunk_num = i + 1
+            start_time = i * chunk_duration_sec
+            chunk_file = output_path / f"{stem}_chunk_{chunk_num:03d}.wav"
+
+            # Use ffmpeg to extract chunk
+            cmd = [
+                'ffmpeg',
+                '-i', str(wav_path),
+                '-ss', str(start_time),
+                '-t', str(chunk_duration_sec),
+                '-acodec', 'pcm_s16le',
+                '-ar', '16000',
+                '-ac', '1',
+                '-y',
+                str(chunk_file)
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+            if result.returncode != 0:
+                return False, f"Błąd ffmpeg przy tworzeniu chunk {chunk_num}: {result.stderr}", []
+
+            if not chunk_file.exists():
+                return False, f"Błąd: Chunk {chunk_num} nie został utworzony", []
+
+            chunk_paths.append(str(chunk_file))
+            print(f"Stworzony chunk {chunk_num}/{num_chunks}: {chunk_file.name}")
+
+        return True, f"Audio podzielone na {num_chunks} chunki", chunk_paths
+
+    except subprocess.TimeoutExpired:
+        return False, "Błąd: Dzielenie audio przerwane (timeout)", []
+    except Exception as e:
+        return False, f"Błąd przy dzieleniu audio: {str(e)}", []
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Pobierz audio z YouTube i konwertuj na transkrypcję SRT'
@@ -146,6 +265,8 @@ def main():
     parser.add_argument('url', nargs='?', help='URL YouTube do transkrypcji')
     parser.add_argument('--only-download', action='store_true',
                        help='Tylko pobierz audio, nie transkrybuj (developerski)')
+    parser.add_argument('--only-chunk', action='store_true',
+                       help='Tylko podziel audio, nie transkrybuj (developerski)')
 
     args = parser.parse_args()
 
@@ -177,8 +298,20 @@ def main():
     if args.only_download:
         return 0
 
+    # Stage 2: Split audio into chunks
+    success, message, chunk_paths = split_audio(audio_path)
+    if not success:
+        print(message)
+        return 1
+
+    print(message)
+    print(f"Chunks: {chunk_paths}")
+
+    if args.only_chunk:
+        return 0
+
     # Future stages will go here
-    print("Etapy 2-5 będą wdrażane w następnych fazach.")
+    print("Etapy 3-5 będą wdrażane w następnych fazach.")
 
     return 0
 
