@@ -18,6 +18,7 @@ import shutil
 import time
 from pathlib import Path
 from typing import Tuple, List
+from tqdm import tqdm
 
 
 def validate_youtube_url(url: str) -> bool:
@@ -204,7 +205,7 @@ def detect_device() -> Tuple[str, str]:
     return "cpu", "CPU"
 
 
-def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "pl") -> Tuple[bool, str, List[Tuple[int, int, str]]]:
+def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "pl", segment_progress_bar: tqdm = None) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
     """
     Transcribe a WAV audio file using faster-whisper.
 
@@ -212,6 +213,7 @@ def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "p
         wav_path: Path to the WAV file
         model_size: Model size to use (tiny, base, small, medium, large)
         language: Language code (default: pl for Polish)
+        segment_progress_bar: Optional tqdm progress bar for segment updates
 
     Returns:
         Tuple of (success: bool, message: str, segments: List[(start_ms, end_ms, text)])
@@ -230,22 +232,22 @@ def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "p
 
         # Detect device
         device, device_info = detect_device()
-        print(f"Używane urządzenie: {device_info}")
+        tqdm.write(f"Używane urządzenie: {device_info}")
 
         # Initialize model
-        print(f"Ładowanie modelu {model_size}...")
+        tqdm.write(f"Ładowanie modelu {model_size}...")
         try:
             model = WhisperModel(model_size, device=device, compute_type="float16" if device == "cuda" else "int8")
         except Exception as e:
             if "CUDA" in str(e) or "GPU" in str(e):
-                print(f"Ostrzeżenie: Nie można użyć GPU, przełączam na CPU. Błąd: {e}")
+                tqdm.write(f"Ostrzeżenie: Nie można użyć GPU, przełączam na CPU. Błąd: {e}")
                 device = "cpu"
                 device_info = "CPU (fallback)"
                 model = WhisperModel(model_size, device=device, compute_type="int8")
             else:
                 raise
 
-        print(f"Transkrypcja: {wav_file.name}...")
+        tqdm.write(f"Transkrypcja: {wav_file.name}...")
 
         # Transcribe
         segments_generator, info = model.transcribe(
@@ -255,7 +257,7 @@ def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "p
             vad_filter=True
         )
 
-        print(f"Wykryty język: {info.language} (prawdopodobieństwo: {info.language_probability:.2f})")
+        tqdm.write(f"Wykryty język: {info.language} (prawdopodobieństwo: {info.language_probability:.2f})")
 
         # Parse segments to list
         segments = []
@@ -265,10 +267,13 @@ def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "p
             text = segment.text.strip()
             segments.append((start_ms, end_ms, text))
 
+            # Update progress bar if provided
+            if segment_progress_bar:
+                segment_progress_bar.set_postfix_str(f"{len(segments)} segments")
+
         if not segments:
             return False, "Błąd: Transkrypcja nie zwróciła żadnych segmentów (puste audio lub brak mowy)", []
 
-        print(f"Transkrypcja zakończona: {len(segments)} segmentów")
         return True, f"Transkrypcja zakończona pomyślnie: {len(segments)} segmentów", segments
 
     except ImportError as e:
@@ -378,7 +383,7 @@ def split_audio(wav_path: str, chunk_duration_sec: int = 1800, output_dir: str =
         chunk_paths = []
         stem = wav_file.stem
 
-        for i in range(num_chunks):
+        for i in tqdm(range(num_chunks), desc="Splitting audio", unit="chunk"):
             chunk_num = i + 1
             start_time = i * chunk_duration_sec
             chunk_file = output_path / f"{stem}_chunk_{chunk_num:03d}.wav"
@@ -405,7 +410,6 @@ def split_audio(wav_path: str, chunk_duration_sec: int = 1800, output_dir: str =
                 return False, f"Błąd: Chunk {chunk_num} nie został utworzony", []
 
             chunk_paths.append(str(chunk_file))
-            print(f"Stworzony chunk {chunk_num}/{num_chunks}: {chunk_file.name}")
 
         return True, f"Audio podzielone na {num_chunks} chunki", chunk_paths
 
@@ -579,35 +583,54 @@ def main():
         chunk_offsets = []
         current_offset_ms = 0
 
-        for idx, chunk_path in enumerate(chunk_paths, 1):
-            print(f"\nTranskrypcja chunk {idx}/{len(chunk_paths)}...")
-            success, message, segments = transcribe_chunk(chunk_path, model_size=args.model)
+        # Create overall progress bar for chunks
+        with tqdm(total=len(chunk_paths), desc="Overall Progress", unit="chunk", position=0) as chunk_pbar:
+            for idx, chunk_path in enumerate(chunk_paths, 1):
+                chunk_file_name = Path(chunk_path).name
 
-            if not success:
-                print(message)
-                return 1
+                # Update chunk progress bar description
+                chunk_pbar.set_description(f"Chunk {idx}/{len(chunk_paths)}")
 
-            print(message)
+                # Create segment progress bar for this chunk (indeterminate - no total)
+                segment_pbar = tqdm(
+                    desc=f"  └─ Transcribing {chunk_file_name}",
+                    unit=" seg",
+                    position=1,
+                    leave=False,  # Don't leave segment bar after completion
+                    total=0,  # Set total to 0 for indeterminate progress
+                    bar_format='{desc}: {postfix}'  # Custom format without progress bar
+                )
 
-            # Store offset for this chunk
-            chunk_offsets.append(current_offset_ms)
+                # Transcribe with progress callback
+                success, message, segments = transcribe_chunk(
+                    chunk_path,
+                    model_size=args.model,
+                    segment_progress_bar=segment_pbar
+                )
 
-            # Adjust timestamps and add to all_segments
-            adjusted_segments = [(start_ms + current_offset_ms, end_ms + current_offset_ms, text)
-                                for start_ms, end_ms, text in segments]
-            all_segments.extend(adjusted_segments)
+                # Close segment progress bar
+                segment_pbar.close()
 
-            # Update offset for next chunk (based on last segment end time)
-            if segments:
-                last_segment_end = segments[-1][1]  # end_ms of last segment
-                current_offset_ms += last_segment_end
+                if not success:
+                    print(message)
+                    return 1
 
-            # Preview first few segments
-            print(f"Pierwsze segmenty z chunk {idx}:")
-            for i, (start_ms, end_ms, text) in enumerate(segments[:3], 1):
-                start_sec = start_ms / 1000
-                end_sec = end_ms / 1000
-                print(f"  [{start_sec:.1f}s - {end_sec:.1f}s] {text[:60]}...")
+                # Store offset for this chunk
+                chunk_offsets.append(current_offset_ms)
+
+                # Adjust timestamps and add to all_segments
+                adjusted_segments = [(start_ms + current_offset_ms, end_ms + current_offset_ms, text)
+                                    for start_ms, end_ms, text in segments]
+                all_segments.extend(adjusted_segments)
+
+                # Update offset for next chunk (based on last segment end time)
+                if segments:
+                    last_segment_end = segments[-1][1]  # end_ms of last segment
+                    current_offset_ms += last_segment_end
+
+                # Update chunk progress bar with segment count
+                chunk_pbar.set_postfix_str(f"{len(segments)} segments, total: {len(all_segments)}")
+                chunk_pbar.update(1)
 
         if args.only_transcribe:
             print(f"\nŁącznie transkrybowanych segmentów: {len(all_segments)}")
@@ -638,8 +661,8 @@ def main():
             return 1
 
         print(message)
-        print(f"\n✓ Transkrypcja zakończona pomyślnie!")
-        print(f"✓ Plik SRT zapisany: {srt_filename}")
+        print(f"\n[OK] Transkrypcja zakończona pomyślnie!")
+        print(f"[OK] Plik SRT zapisany: {srt_filename}")
         print(f"\nMożesz otworzyć plik SRT w VLC lub innym odtwarzaczu wideo.")
 
         return 0
