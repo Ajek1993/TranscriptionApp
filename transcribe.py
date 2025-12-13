@@ -5,6 +5,7 @@ MVP Stage 1: Validate and download audio from YouTube
 MVP Stage 2: Split audio into chunks (~30 minutes each)
 MVP Stage 3: Transcribe audio using faster-whisper
 MVP Stage 4: Merge segments and generate SRT file
+MVP Stage 5: Complete pipeline with CLI and automatic cleanup
 """
 
 import re
@@ -12,6 +13,9 @@ import subprocess
 import sys
 import argparse
 import json
+import tempfile
+import shutil
+import time
 from pathlib import Path
 from typing import Tuple, List
 
@@ -411,6 +415,36 @@ def split_audio(wav_path: str, chunk_duration_sec: int = 1800, output_dir: str =
         return False, f"Błąd przy dzieleniu audio: {str(e)}", []
 
 
+def cleanup_temp_files(temp_dir: str, retries: int = 3, delay: float = 0.2) -> None:
+    """
+    Clean up temporary files and directories with retry mechanism for Windows file locks.
+
+    Args:
+        temp_dir: Path to the temporary directory to remove
+        retries: Number of retry attempts (default: 3)
+        delay: Delay between retries in seconds (default: 0.2)
+    """
+    if not temp_dir or not Path(temp_dir).exists():
+        return
+
+    for attempt in range(retries):
+        try:
+            shutil.rmtree(temp_dir)
+            print(f"Pliki tymczasowe usunięte: {temp_dir}")
+            return
+        except PermissionError as e:
+            if attempt < retries - 1:
+                # Wait a bit for Windows to release file locks
+                time.sleep(delay)
+            else:
+                print(f"Ostrzeżenie: Nie można usunąć plików tymczasowych: {temp_dir}")
+                print(f"Błąd: {e}")
+                print("Możesz usunąć je ręcznie później.")
+        except Exception as e:
+            print(f"Ostrzeżenie: Błąd przy usuwaniu plików tymczasowych: {e}")
+            return
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Pobierz audio z YouTube i konwertuj na transkrypcję SRT'
@@ -501,98 +535,119 @@ def main():
         print(deps_msg)
         return 1
 
-    # Download audio
-    success, message, audio_path = download_audio(args.url)
-    if not success:
-        print(message)
-        return 1
+    # Create temporary directory for intermediate files
+    temp_dir = None
+    try:
+        temp_dir = tempfile.mkdtemp(prefix="transcribe_")
+        print(f"Katalog tymczasowy: {temp_dir}")
 
-    print(message)
-
-    if args.only_download:
-        return 0
-
-    # Stage 2: Split audio into chunks
-    success, message, chunk_paths = split_audio(audio_path)
-    if not success:
-        print(message)
-        return 1
-
-    print(message)
-    print(f"Chunks: {chunk_paths}")
-
-    if args.only_chunk:
-        return 0
-
-    # Stage 3: Transcribe each chunk
-    all_segments = []
-    chunk_offsets = []
-    current_offset_ms = 0
-
-    for idx, chunk_path in enumerate(chunk_paths, 1):
-        print(f"\nTranskrypcja chunk {idx}/{len(chunk_paths)}...")
-        success, message, segments = transcribe_chunk(chunk_path, model_size=args.model)
-
+        # Download audio to temporary directory
+        success, message, audio_path = download_audio(args.url, output_dir=temp_dir)
         if not success:
             print(message)
             return 1
 
         print(message)
 
-        # Store offset for this chunk
-        chunk_offsets.append(current_offset_ms)
+        if args.only_download:
+            # For --only-download, copy file to current directory before cleanup
+            audio_file = Path(audio_path)
+            dest_path = Path.cwd() / audio_file.name
+            shutil.copy2(audio_path, dest_path)
+            print(f"Plik audio skopiowany do: {dest_path}")
+            return 0
 
-        # Adjust timestamps and add to all_segments
-        adjusted_segments = [(start_ms + current_offset_ms, end_ms + current_offset_ms, text)
-                            for start_ms, end_ms, text in segments]
-        all_segments.extend(adjusted_segments)
+        # Stage 2: Split audio into chunks (in temp directory)
+        success, message, chunk_paths = split_audio(audio_path, output_dir=temp_dir)
+        if not success:
+            print(message)
+            return 1
 
-        # Update offset for next chunk (based on last segment end time)
-        if segments:
-            last_segment_end = segments[-1][1]  # end_ms of last segment
-            current_offset_ms += last_segment_end
+        print(message)
 
-        # Preview first few segments
-        print(f"Pierwsze segmenty z chunk {idx}:")
-        for i, (start_ms, end_ms, text) in enumerate(segments[:3], 1):
-            start_sec = start_ms / 1000
-            end_sec = end_ms / 1000
-            print(f"  [{start_sec:.1f}s - {end_sec:.1f}s] {text[:60]}...")
+        if args.only_chunk:
+            # For --only-chunk, copy chunks to current directory before cleanup
+            for chunk_path in chunk_paths:
+                chunk_file = Path(chunk_path)
+                dest_path = Path.cwd() / chunk_file.name
+                shutil.copy2(chunk_path, dest_path)
+                print(f"Chunk skopiowany do: {dest_path}")
+            return 0
 
-    if args.only_transcribe:
-        print(f"\nŁącznie transkrybowanych segmentów: {len(all_segments)}")
+        # Stage 3: Transcribe each chunk
+        all_segments = []
+        chunk_offsets = []
+        current_offset_ms = 0
+
+        for idx, chunk_path in enumerate(chunk_paths, 1):
+            print(f"\nTranskrypcja chunk {idx}/{len(chunk_paths)}...")
+            success, message, segments = transcribe_chunk(chunk_path, model_size=args.model)
+
+            if not success:
+                print(message)
+                return 1
+
+            print(message)
+
+            # Store offset for this chunk
+            chunk_offsets.append(current_offset_ms)
+
+            # Adjust timestamps and add to all_segments
+            adjusted_segments = [(start_ms + current_offset_ms, end_ms + current_offset_ms, text)
+                                for start_ms, end_ms, text in segments]
+            all_segments.extend(adjusted_segments)
+
+            # Update offset for next chunk (based on last segment end time)
+            if segments:
+                last_segment_end = segments[-1][1]  # end_ms of last segment
+                current_offset_ms += last_segment_end
+
+            # Preview first few segments
+            print(f"Pierwsze segmenty z chunk {idx}:")
+            for i, (start_ms, end_ms, text) in enumerate(segments[:3], 1):
+                start_sec = start_ms / 1000
+                end_sec = end_ms / 1000
+                print(f"  [{start_sec:.1f}s - {end_sec:.1f}s] {text[:60]}...")
+
+        if args.only_transcribe:
+            print(f"\nŁącznie transkrybowanych segmentów: {len(all_segments)}")
+            return 0
+
+        # Stage 4: Generate SRT file
+        print(f"\n=== Etap 4: Generowanie pliku SRT ===")
+        print(f"Łącznie segmentów: {len(all_segments)}")
+
+        # Determine output filename
+        if args.output:
+            srt_filename = args.output
+            if not srt_filename.endswith('.srt'):
+                srt_filename += '.srt'
+        else:
+            # Extract video ID from URL for filename
+            video_id_match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', args.url)
+            if video_id_match:
+                video_id = video_id_match.group(1)
+                srt_filename = f"{video_id}.srt"
+            else:
+                srt_filename = "output.srt"
+
+        # Write SRT file to current directory
+        success, message = write_srt(all_segments, srt_filename)
+        if not success:
+            print(message)
+            return 1
+
+        print(message)
+        print(f"\n✓ Transkrypcja zakończona pomyślnie!")
+        print(f"✓ Plik SRT zapisany: {srt_filename}")
+        print(f"\nMożesz otworzyć plik SRT w VLC lub innym odtwarzaczu wideo.")
+
         return 0
 
-    # Stage 4: Generate SRT file
-    print(f"\n=== Etap 4: Generowanie pliku SRT ===")
-    print(f"Łącznie segmentów: {len(all_segments)}")
-
-    # Determine output filename
-    if args.output:
-        srt_filename = args.output
-        if not srt_filename.endswith('.srt'):
-            srt_filename += '.srt'
-    else:
-        # Extract video ID from URL for filename
-        video_id_match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', args.url)
-        if video_id_match:
-            video_id = video_id_match.group(1)
-            srt_filename = f"{video_id}.srt"
-        else:
-            srt_filename = "output.srt"
-
-    # Write SRT file
-    success, message = write_srt(all_segments, srt_filename)
-    if not success:
-        print(message)
-        return 1
-
-    print(message)
-    print(f"\n✓ Transkrypcja zakończona pomyślnie!")
-    print(f"✓ Plik SRT zapisany: {srt_filename}")
-    print(f"\nMożesz otworzyć plik SRT w VLC lub innym odtwarzaczu wideo.")
-
-    return 0
+    finally:
+        # Always cleanup temporary files, even on error
+        if temp_dir:
+            cleanup_temp_files(temp_dir)
 
 
 if __name__ == '__main__':
