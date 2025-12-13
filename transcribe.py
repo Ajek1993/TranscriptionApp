@@ -1,677 +1,192 @@
 #!/usr/bin/env python3
 """
-YouTube to SRT Transcription Tool
-MVP Stage 1: Validate and download audio from YouTube
-MVP Stage 2: Split audio into chunks (~30 minutes each)
-MVP Stage 3: Transcribe audio using faster-whisper
-MVP Stage 4: Merge segments and generate SRT file
-MVP Stage 5: Complete pipeline with CLI and automatic cleanup
+YouTube Video Transcription to SRT - Stage 1: Validation and Audio Download
 """
 
 import re
-import subprocess
 import sys
+import subprocess
 import argparse
-import json
-import tempfile
+import os
 import shutil
-import time
 from pathlib import Path
-from typing import Tuple, List
-from tqdm import tqdm
 
 
-def validate_youtube_url(url: str) -> bool:
+def validate_youtube_url(url):
     """
-    Validate if the provided URL is a valid YouTube URL.
-
-    Args:
-        url: The URL to validate
+    Validate if URL is a valid YouTube URL.
 
     Returns:
-        True if valid YouTube URL, False otherwise
+        str: Video ID if valid, None otherwise
     """
-    youtube_regex = r'(https?://)?(www\.)?(youtube|youtu|youtube-nocookie)\.(com|be)/'
-    return bool(re.match(youtube_regex, url))
+    # Pattern for YouTube URLs
+    patterns = [
+        r'(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})',
+        r'(?:https?://)?(?:www\.)?youtu\.be/([a-zA-Z0-9_-]{11})',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+
+    return None
 
 
-def check_dependencies() -> Tuple[bool, str]:
+def check_dependencies():
     """
-    Check if required dependencies are available (ffmpeg and yt-dlp).
+    Check if required dependencies are installed (ffmpeg, yt-dlp).
 
-    Returns:
-        Tuple of (success: bool, message: str)
+    Raises:
+        SystemExit: If dependencies are missing with helpful error messages
     """
-    missing_deps = []
-
     # Check ffmpeg
     try:
-        subprocess.run(['ffmpeg', '-version'],
-                      capture_output=True,
-                      timeout=5,
-                      check=True)
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-        missing_deps.append('ffmpeg')
+        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("Błąd: ffmpeg nie jest zainstalowany.")
+        if sys.platform == 'darwin':
+            print("Zainstaluj: brew install ffmpeg")
+        elif sys.platform == 'win32':
+            print("Zainstaluj: choco install ffmpeg")
+        else:
+            print("Zainstaluj: sudo apt-get install ffmpeg")
+        sys.exit(1)
 
     # Check yt-dlp
     try:
-        subprocess.run(['yt-dlp', '--version'],
-                      capture_output=True,
-                      timeout=5,
-                      check=True)
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-        missing_deps.append('yt-dlp')
-
-    if missing_deps:
-        error_msg = "Błąd: Brakuje wymaganych narzędzi:\n\n"
-
-        if 'ffmpeg' in missing_deps:
-            error_msg += "ffmpeg nie jest zainstalowany. Zainstaluj:\n"
-            error_msg += "  - winget install FFmpeg\n"
-            error_msg += "  - lub choco install ffmpeg\n"
-            error_msg += "  - lub pobierz z https://ffmpeg.org/download.html\n\n"
-
-        if 'yt-dlp' in missing_deps:
-            error_msg += "yt-dlp nie jest zainstalowany. Zainstaluj: pip install yt-dlp\n"
-
-        return False, error_msg
-
-    return True, "Wszystkie zależności dostępne"
+        subprocess.run(['yt-dlp', '--version'], capture_output=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("Błąd: yt-dlp nie jest zainstalowany.")
+        print("Zainstaluj: pip install yt-dlp")
+        sys.exit(1)
 
 
-def download_audio(url: str, output_dir: str = ".") -> Tuple[bool, str, str]:
+def download_audio(url, output_dir):
     """
-    Download audio from YouTube and save as WAV (mono, 16kHz).
+    Download audio from YouTube URL and save as mono WAV at 16kHz.
 
     Args:
-        url: YouTube URL
-        output_dir: Directory to save the audio file
+        url (str): YouTube URL
+        output_dir (str): Directory to save the audio file
 
     Returns:
-        Tuple of (success: bool, message: str, audio_path: str)
+        str: Path to downloaded audio file
+
+    Raises:
+        RuntimeError: If download fails
     """
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    # Extract video ID for naming
-    video_id_match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', url)
-    if not video_id_match:
-        return False, "Błąd: Nie udało się wyodrębnić ID wideo z URL", ""
-
-    video_id = video_id_match.group(1)
-    audio_file = output_path / f"{video_id}.wav"
-
-    try:
-        print(f"Pobieranie audio z YouTube... ({url})")
-
-        cmd = [
-            'yt-dlp',
-            '-f', 'bestaudio/best',
-            '-x',
-            '--audio-format', 'wav',
-            '--audio-quality', '0',
-            '-o', str(audio_file),
-            url
-        ]
-
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-
-        if result.returncode != 0:
-            error_msg = result.stderr if result.stderr else "Nieznany błąd yt-dlp"
-            if "private" in error_msg.lower() or "not available" in error_msg.lower():
-                return False, "Błąd: Nie można pobrać filmu. Film może być prywatny, usunięty lub niedostępny w Twoim regionie.", ""
-            else:
-                return False, f"Błąd yt-dlp: {error_msg}", ""
-
-        if not audio_file.exists():
-            return False, f"Błąd: Plik audio nie został utworzony: {audio_file}", ""
-
-        print(f"Audio pobrane: {audio_file}")
-
-        # Verify audio format with ffprobe
-        probe_cmd = ['ffprobe', '-v', 'error', '-show_entries',
-                     'stream=channels,sample_rate', '-of', 'default=noprint_wrappers=1:nokey=1:noescapes=1',
-                     str(audio_file)]
-        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
-
-        if probe_result.returncode == 0:
-            output_info = probe_result.stdout.strip().split('\n')
-            channels = int(output_info[0]) if len(output_info) > 0 else 0
-            sample_rate = int(output_info[1]) if len(output_info) > 1 else 0
-            print(f"Format audio: {channels} kanał(y), {sample_rate} Hz")
-
-        return True, f"Audio pobrane pomyślnie: {audio_file}", str(audio_file)
-
-    except subprocess.TimeoutExpired:
-        return False, "Błąd: Pobieranie przerwane (timeout). Spróbuj ponownie.", ""
-    except Exception as e:
-        return False, f"Błąd przy pobieraniu: {str(e)}", ""
-
-
-def get_audio_duration(wav_path: str) -> Tuple[bool, float]:
-    """
-    Get the duration of an audio file in seconds using ffprobe.
-
-    Args:
-        wav_path: Path to the WAV file
-
-    Returns:
-        Tuple of (success: bool, duration_seconds: float)
-    """
-    try:
-        probe_cmd = [
-            'ffprobe',
-            '-v', 'error',
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            str(wav_path)
-        ]
-
-        result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
-
-        if result.returncode != 0:
-            return False, 0.0
-
-        try:
-            duration = float(result.stdout.strip())
-            return True, duration
-        except ValueError:
-            return False, 0.0
-
-    except subprocess.TimeoutExpired:
-        return False, 0.0
-    except Exception as e:
-        print(f"Błąd przy odczytaniu długości audio: {str(e)}")
-        return False, 0.0
-
-
-def detect_device() -> Tuple[str, str]:
-    """
-    Detect available device for faster-whisper (CUDA GPU or CPU).
-
-    Returns:
-        Tuple of (device: str, device_info: str)
-    """
-    try:
-        import torch
-        if torch.cuda.is_available():
-            gpu_name = torch.cuda.get_device_name(0)
-            return "cuda", f"NVIDIA GPU ({gpu_name})"
-    except ImportError:
-        pass
-    except Exception:
-        pass
-
-    return "cpu", "CPU"
-
-
-def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "pl", segment_progress_bar: tqdm = None) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
-    """
-    Transcribe a WAV audio file using faster-whisper.
-
-    Args:
-        wav_path: Path to the WAV file
-        model_size: Model size to use (tiny, base, small, medium, large)
-        language: Language code (default: pl for Polish)
-        segment_progress_bar: Optional tqdm progress bar for segment updates
-
-    Returns:
-        Tuple of (success: bool, message: str, segments: List[(start_ms, end_ms, text)])
-    """
-    try:
-        # Check if faster-whisper is installed
-        try:
-            from faster_whisper import WhisperModel
-        except ImportError:
-            return False, "Błąd: faster-whisper nie jest zainstalowany. Zainstaluj: pip install faster-whisper", []
-
-        # Check if file exists
-        wav_file = Path(wav_path)
-        if not wav_file.exists():
-            return False, f"Błąd: Plik audio nie istnieje: {wav_path}", []
-
-        # Detect device
-        device, device_info = detect_device()
-        tqdm.write(f"Używane urządzenie: {device_info}")
-
-        # Initialize model
-        tqdm.write(f"Ładowanie modelu {model_size}...")
-        try:
-            model = WhisperModel(model_size, device=device, compute_type="float16" if device == "cuda" else "int8")
-        except Exception as e:
-            if "CUDA" in str(e) or "GPU" in str(e):
-                tqdm.write(f"Ostrzeżenie: Nie można użyć GPU, przełączam na CPU. Błąd: {e}")
-                device = "cpu"
-                device_info = "CPU (fallback)"
-                model = WhisperModel(model_size, device=device, compute_type="int8")
-            else:
-                raise
-
-        tqdm.write(f"Transkrypcja: {wav_file.name}...")
-
-        # Transcribe
-        segments_generator, info = model.transcribe(
-            str(wav_path),
-            language=language,
-            word_timestamps=False,
-            vad_filter=True
+    video_id = validate_youtube_url(url)
+    if not video_id:
+        raise ValueError(
+            f"Błąd: Niepoprawny URL YouTube. "
+            f"Podaj link w formacie: https://www.youtube.com/watch?v=VIDEO_ID"
         )
 
-        tqdm.write(f"Wykryty język: {info.language} (prawdopodobieństwo: {info.language_probability:.2f})")
+    output_path = os.path.join(output_dir, f"{video_id}.wav")
 
-        # Parse segments to list
-        segments = []
-        for segment in segments_generator:
-            start_ms = int(segment.start * 1000)
-            end_ms = int(segment.end * 1000)
-            text = segment.text.strip()
-            segments.append((start_ms, end_ms, text))
+    # yt-dlp command to extract audio
+    cmd = [
+        'yt-dlp',
+        '-x',  # Extract audio only
+        '--audio-format', 'wav',
+        '--audio-quality', '192',
+        '-o', output_path,
+        url
+    ]
 
-            # Update progress bar if provided
-            if segment_progress_bar:
-                segment_progress_bar.set_postfix_str(f"{len(segments)} segments")
-
-        if not segments:
-            return False, "Błąd: Transkrypcja nie zwróciła żadnych segmentów (puste audio lub brak mowy)", []
-
-        return True, f"Transkrypcja zakończona pomyślnie: {len(segments)} segmentów", segments
-
-    except ImportError as e:
-        return False, f"Błąd: Brak wymaganej biblioteki: {str(e)}. Zainstaluj: pip install faster-whisper", []
-    except Exception as e:
-        return False, f"Błąd podczas transkrypcji: {str(e)}", []
-
-
-def format_srt_timestamp(ms: int) -> str:
-    """
-    Convert milliseconds to SRT timestamp format (HH:MM:SS,mmm).
-
-    Args:
-        ms: Time in milliseconds
-
-    Returns:
-        Formatted timestamp string in SRT format
-    """
-    total_seconds = ms // 1000
-    milliseconds = ms % 1000
-
-    hours = total_seconds // 3600
-    minutes = (total_seconds % 3600) // 60
-    seconds = total_seconds % 60
-
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
-
-
-def write_srt(segments: List[Tuple[int, int, str]], output_path: str) -> Tuple[bool, str]:
-    """
-    Write segments to an SRT file with UTF-8 encoding.
-
-    Args:
-        segments: List of (start_ms, end_ms, text) tuples
-        output_path: Path to the output SRT file
-
-    Returns:
-        Tuple of (success: bool, message: str)
-    """
     try:
-        if not segments:
-            print("Ostrzeżenie: Brak segmentów do zapisania")
-            # Create empty SRT file with warning comment
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write("# Pusty plik SRT - brak segmentów transkrypcji\n")
-            return True, f"Zapisano pusty plik SRT (brak segmentów): {output_path}"
-
-        with open(output_path, 'w', encoding='utf-8') as f:
-            for idx, (start_ms, end_ms, text) in enumerate(segments, 1):
-                # SRT format:
-                # 1
-                # 00:00:00,000 --> 00:00:05,000
-                # Text content
-                # [blank line]
-
-                f.write(f"{idx}\n")
-                f.write(f"{format_srt_timestamp(start_ms)} --> {format_srt_timestamp(end_ms)}\n")
-                f.write(f"{text}\n")
-                f.write("\n")
-
-        return True, f"Zapisano {len(segments)} segmentów do pliku SRT: {output_path}"
-
-    except Exception as e:
-        return False, f"Błąd przy zapisie pliku SRT: {str(e)}"
-
-
-def split_audio(wav_path: str, chunk_duration_sec: int = 1800, output_dir: str = ".") -> Tuple[bool, str, List[str]]:
-    """
-    Split a WAV audio file into chunks of specified duration.
-
-    Args:
-        wav_path: Path to the input WAV file
-        chunk_duration_sec: Duration of each chunk in seconds (default: 1800 = 30 minutes)
-        output_dir: Directory to save the chunks
-
-    Returns:
-        Tuple of (success: bool, message: str, chunk_paths: List[str])
-    """
-    try:
-        wav_file = Path(wav_path)
-        if not wav_file.exists():
-            return False, f"Błąd: Plik audio nie istnieje: {wav_path}", []
-
-        # Get audio duration
-        success, duration = get_audio_duration(wav_path)
-        if not success:
-            return False, "Błąd: Nie można odczytać długości audio", []
-
-        if duration == 0:
-            return False, "Błąd: Audio jest puste (duration = 0)", []
-
-        print(f"Długość audio: {duration:.1f} sekund ({duration/60:.1f} minut)")
-
-        # If audio is shorter than chunk duration, return the original file
-        if duration <= chunk_duration_sec:
-            print(f"Audio krótsze niż {chunk_duration_sec} sekund - brak podziału")
-            return True, "Audio nie wymaga podziału", [str(wav_path)]
-
-        # Create output directory for chunks
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-
-        # Calculate number of chunks needed
-        num_chunks = (int(duration) + chunk_duration_sec - 1) // chunk_duration_sec
-        print(f"Dzielenie audio na {num_chunks} chunki po {chunk_duration_sec} sekund...")
-
-        chunk_paths = []
-        stem = wav_file.stem
-
-        for i in tqdm(range(num_chunks), desc="Splitting audio", unit="chunk"):
-            chunk_num = i + 1
-            start_time = i * chunk_duration_sec
-            chunk_file = output_path / f"{stem}_chunk_{chunk_num:03d}.wav"
-
-            # Use ffmpeg to extract chunk
-            cmd = [
-                'ffmpeg',
-                '-i', str(wav_path),
-                '-ss', str(start_time),
-                '-t', str(chunk_duration_sec),
-                '-acodec', 'pcm_s16le',
-                '-ar', '16000',
-                '-ac', '1',
-                '-y',
-                str(chunk_file)
-            ]
-
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-
-            if result.returncode != 0:
-                return False, f"Błąd ffmpeg przy tworzeniu chunk {chunk_num}: {result.stderr}", []
-
-            if not chunk_file.exists():
-                return False, f"Błąd: Chunk {chunk_num} nie został utworzony", []
-
-            chunk_paths.append(str(chunk_file))
-
-        return True, f"Audio podzielone na {num_chunks} chunki", chunk_paths
-
+        print(f"Pobieranie audio z YouTube...")
+        subprocess.run(cmd, check=True, capture_output=True, timeout=300)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"Błąd: Nie można pobrać filmu. "
+            f"Film może być prywatny, usunięty lub niedostępny w Twoim regionie."
+        )
     except subprocess.TimeoutExpired:
-        return False, "Błąd: Dzielenie audio przerwane (timeout)", []
-    except Exception as e:
-        return False, f"Błąd przy dzieleniu audio: {str(e)}", []
+        raise RuntimeError("Błąd: Pobieranie trwało za długo (timeout)")
 
+    # Convert to mono 16kHz using ffmpeg
+    temp_path = os.path.join(output_dir, f"{video_id}_temp.wav")
+    os.rename(output_path, temp_path)
 
-def cleanup_temp_files(temp_dir: str, retries: int = 3, delay: float = 0.2) -> None:
-    """
-    Clean up temporary files and directories with retry mechanism for Windows file locks.
+    ffmpeg_cmd = [
+        'ffmpeg',
+        '-i', temp_path,
+        '-ac', '1',  # Convert to mono
+        '-ar', '16000',  # Resample to 16kHz
+        '-y',  # Overwrite without asking
+        output_path
+    ]
 
-    Args:
-        temp_dir: Path to the temporary directory to remove
-        retries: Number of retry attempts (default: 3)
-        delay: Delay between retries in seconds (default: 0.2)
-    """
-    if not temp_dir or not Path(temp_dir).exists():
-        return
+    try:
+        subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+        os.remove(temp_path)
+    except subprocess.CalledProcessError as e:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        raise RuntimeError(f"Błąd: Nie można przetworzyć audio: {e}")
 
-    for attempt in range(retries):
-        try:
-            shutil.rmtree(temp_dir)
-            print(f"Pliki tymczasowe usunięte: {temp_dir}")
-            return
-        except PermissionError as e:
-            if attempt < retries - 1:
-                # Wait a bit for Windows to release file locks
-                time.sleep(delay)
-            else:
-                print(f"Ostrzeżenie: Nie można usunąć plików tymczasowych: {temp_dir}")
-                print(f"Błąd: {e}")
-                print("Możesz usunąć je ręcznie później.")
-        except Exception as e:
-            print(f"Ostrzeżenie: Błąd przy usuwaniu plików tymczasowych: {e}")
-            return
+    return output_path
 
 
 def main():
+    """Main entry point for the transcription pipeline."""
     parser = argparse.ArgumentParser(
-        description='Pobierz audio z YouTube i konwertuj na transkrypcję SRT'
+        description='Convert YouTube video to SRT subtitles'
     )
-    parser.add_argument('url', nargs='?', help='URL YouTube do transkrypcji')
-    parser.add_argument('--only-download', action='store_true',
-                       help='Tylko pobierz audio, nie transkrybuj (developerski)')
-    parser.add_argument('--only-chunk', action='store_true',
-                       help='Tylko podziel audio, nie transkrybuj (developerski)')
-    parser.add_argument('--only-transcribe', action='store_true',
-                       help='Tylko transkrybuj chunki, nie generuj SRT (developerski)')
-    parser.add_argument('--test-merge', action='store_true',
-                       help='Test generowania SRT z hardcoded danymi (developerski)')
-    parser.add_argument('--model', default='base', choices=['tiny', 'base', 'small', 'medium', 'large'],
-                       help='Rozmiar modelu Whisper (domyślnie: base)')
-    parser.add_argument('-o', '--output', type=str,
-                       help='Nazwa pliku wyjściowego SRT (domyślnie: video_id.srt)')
+    parser.add_argument(
+        'url',
+        nargs='?',
+        help='YouTube URL to transcribe'
+    )
+    parser.add_argument(
+        '-o', '--output',
+        help='Output SRT filename'
+    )
+    parser.add_argument(
+        '--only-download',
+        action='store_true',
+        help=argparse.SUPPRESS  # Developer flag
+    )
 
     args = parser.parse_args()
 
-    # Test merge functionality with hardcoded data
-    if args.test_merge:
-        print("Test generowania SRT z przykładowymi danymi...")
-
-        # Hardcoded test segments simulating 2 chunks
-        # Chunk 1: 0-30 seconds
-        chunk1_segments = [
-            (0, 5000, "Witam w przykładowym filmie o transkrypcji."),
-            (5500, 12000, "To jest pierwszy segment z pierwszego chunka."),
-            (12500, 20000, "Tutaj sprawdzamy czy polskie znaki działają: ąćęłńóśźż."),
-            (20500, 30000, "Koniec pierwszego chunka.")
-        ]
-
-        # Chunk 2: 30-60 seconds (timestamps will be adjusted)
-        chunk2_segments = [
-            (0, 8000, "To jest początek drugiego chunka."),
-            (8500, 18000, "Timestampy powinny być przesunięte o 30 sekund."),
-            (18500, 28000, "Sprawdzamy merge i scalanie segmentów."),
-            (28500, 35000, "Koniec testu.")
-        ]
-
-        # Simulate merging process
-        all_segments = []
-        chunk_offsets = [0, 30000]  # Second chunk starts at 30 seconds
-
-        # Add chunk 1 segments with offset
-        for start_ms, end_ms, text in chunk1_segments:
-            all_segments.append((start_ms + chunk_offsets[0], end_ms + chunk_offsets[0], text))
-
-        # Add chunk 2 segments with offset
-        for start_ms, end_ms, text in chunk2_segments:
-            all_segments.append((start_ms + chunk_offsets[1], end_ms + chunk_offsets[1], text))
-
-        # Write to test output file
-        test_output = "test_output.srt"
-        success, message = write_srt(all_segments, test_output)
-
-        if success:
-            print(message)
-            print(f"\nPodgląd zawartości {test_output}:")
-            print("-" * 60)
-            with open(test_output, 'r', encoding='utf-8') as f:
-                content = f.read()
-                print(content[:500])  # Print first 500 chars
-                if len(content) > 500:
-                    print("...")
-            print("-" * 60)
-            print(f"\nOtwórz plik '{test_output}' w VLC lub innym odtwarzaczu aby sprawdzić napisy.")
-            return 0
-        else:
-            print(message)
-            return 1
-
-    # Check if URL was provided
+    # Validate arguments
     if not args.url:
-        print("Błąd: Podaj URL YouTube")
-        print("Użycie: python transcribe.py \"https://www.youtube.com/watch?v=VIDEO_ID\"")
-        return 1
-
-    # Validate URL
-    if not validate_youtube_url(args.url):
-        print("Błąd: Niepoprawny URL YouTube. Podaj link w formacie: https://www.youtube.com/watch?v=VIDEO_ID")
-        return 1
+        parser.print_help()
+        sys.exit(1)
 
     # Check dependencies
-    deps_ok, deps_msg = check_dependencies()
-    if not deps_ok:
-        print(deps_msg)
-        return 1
+    check_dependencies()
 
-    # Create temporary directory for intermediate files
-    temp_dir = None
+    # Validate YouTube URL
+    video_id = validate_youtube_url(args.url)
+    if not video_id:
+        print(
+            f"Błąd: Niepoprawny URL YouTube. "
+            f"Podaj link w formacie: https://www.youtube.com/watch?v=VIDEO_ID"
+        )
+        sys.exit(1)
+
+    # Create temp directory
+    output_dir = Path(os.getcwd())
+
     try:
-        temp_dir = tempfile.mkdtemp(prefix="transcribe_")
-        print(f"Katalog tymczasowy: {temp_dir}")
-
-        # Download audio to temporary directory
-        success, message, audio_path = download_audio(args.url, output_dir=temp_dir)
-        if not success:
-            print(message)
-            return 1
-
-        print(message)
+        # Download audio
+        audio_path = download_audio(args.url, str(output_dir))
+        print(f"Pobrano audio: {audio_path}")
 
         if args.only_download:
-            # For --only-download, copy file to current directory before cleanup
-            audio_file = Path(audio_path)
-            dest_path = Path.cwd() / audio_file.name
-            shutil.copy2(audio_path, dest_path)
-            print(f"Plik audio skopiowany do: {dest_path}")
-            return 0
+            print(f"Sukces: Audio zostało pobrane do {audio_path}")
+            return
 
-        # Stage 2: Split audio into chunks (in temp directory)
-        success, message, chunk_paths = split_audio(audio_path, output_dir=temp_dir)
-        if not success:
-            print(message)
-            return 1
+        # TODO: Add other stages (chunking, transcription, etc.)
 
-        print(message)
-
-        if args.only_chunk:
-            # For --only-chunk, copy chunks to current directory before cleanup
-            for chunk_path in chunk_paths:
-                chunk_file = Path(chunk_path)
-                dest_path = Path.cwd() / chunk_file.name
-                shutil.copy2(chunk_path, dest_path)
-                print(f"Chunk skopiowany do: {dest_path}")
-            return 0
-
-        # Stage 3: Transcribe each chunk
-        all_segments = []
-        chunk_offsets = []
-        current_offset_ms = 0
-
-        # Create overall progress bar for chunks
-        with tqdm(total=len(chunk_paths), desc="Overall Progress", unit="chunk", position=0) as chunk_pbar:
-            for idx, chunk_path in enumerate(chunk_paths, 1):
-                chunk_file_name = Path(chunk_path).name
-
-                # Update chunk progress bar description
-                chunk_pbar.set_description(f"Chunk {idx}/{len(chunk_paths)}")
-
-                # Create segment progress bar for this chunk (indeterminate - no total)
-                segment_pbar = tqdm(
-                    desc=f"  └─ Transcribing {chunk_file_name}",
-                    unit=" seg",
-                    position=1,
-                    leave=False,  # Don't leave segment bar after completion
-                    total=0,  # Set total to 0 for indeterminate progress
-                    bar_format='{desc}: {postfix}'  # Custom format without progress bar
-                )
-
-                # Transcribe with progress callback
-                success, message, segments = transcribe_chunk(
-                    chunk_path,
-                    model_size=args.model,
-                    segment_progress_bar=segment_pbar
-                )
-
-                # Close segment progress bar
-                segment_pbar.close()
-
-                if not success:
-                    print(message)
-                    return 1
-
-                # Store offset for this chunk
-                chunk_offsets.append(current_offset_ms)
-
-                # Adjust timestamps and add to all_segments
-                adjusted_segments = [(start_ms + current_offset_ms, end_ms + current_offset_ms, text)
-                                    for start_ms, end_ms, text in segments]
-                all_segments.extend(adjusted_segments)
-
-                # Update offset for next chunk (based on last segment end time)
-                if segments:
-                    last_segment_end = segments[-1][1]  # end_ms of last segment
-                    current_offset_ms += last_segment_end
-
-                # Update chunk progress bar with segment count
-                chunk_pbar.set_postfix_str(f"{len(segments)} segments, total: {len(all_segments)}")
-                chunk_pbar.update(1)
-
-        if args.only_transcribe:
-            print(f"\nŁącznie transkrybowanych segmentów: {len(all_segments)}")
-            return 0
-
-        # Stage 4: Generate SRT file
-        print(f"\n=== Etap 4: Generowanie pliku SRT ===")
-        print(f"Łącznie segmentów: {len(all_segments)}")
-
-        # Determine output filename
-        if args.output:
-            srt_filename = args.output
-            if not srt_filename.endswith('.srt'):
-                srt_filename += '.srt'
-        else:
-            # Extract video ID from URL for filename
-            video_id_match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', args.url)
-            if video_id_match:
-                video_id = video_id_match.group(1)
-                srt_filename = f"{video_id}.srt"
-            else:
-                srt_filename = "output.srt"
-
-        # Write SRT file to current directory
-        success, message = write_srt(all_segments, srt_filename)
-        if not success:
-            print(message)
-            return 1
-
-        print(message)
-        print(f"\n[OK] Transkrypcja zakończona pomyślnie!")
-        print(f"[OK] Plik SRT zapisany: {srt_filename}")
-        print(f"\nMożesz otworzyć plik SRT w VLC lub innym odtwarzaczu wideo.")
-
-        return 0
-
-    finally:
-        # Always cleanup temporary files, even on error
-        if temp_dir:
-            cleanup_temp_files(temp_dir)
+    except Exception as e:
+        print(f"{e}")
+        sys.exit(1)
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    main()

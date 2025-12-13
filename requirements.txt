@@ -1,3 +1,2 @@
-yt-dlp>=2024.01.01
-faster-whisper>=0.10.0
-tqdm>=4.66.0
+yt-dlp>=2024.1.0
+parakeet-mlx>=0.1.0
