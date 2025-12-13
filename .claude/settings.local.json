@@ -1,20 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python transcribe.py:*)",
-      "Bash(pip install:*)",
-      "Bash(choco install:*)",
-      "Bash(winget install:*)",
-      "Bash(dir:*)",
-      "Bash(ffprobe:*)",
-      "Bash(yt-dlp --version:*)",
-      "Bash(ffmpeg:*)",
-      "Bash(python3:*)",
-      "Bash(git add:*)",
-      "Bash(git commit:*)",
-      "Bash(git checkout:*)",
-      "Bash(python:*)",
-      "Bash(pip uninstall:*)"
+      "Bash(done)"
     ],
     "deny": [],
     "ask": []

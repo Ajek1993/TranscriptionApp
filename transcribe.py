@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-YouTube Video Transcription to SRT - Stage 1: Validation and Audio Download
+YouTube Video Transcription to SRT - Stage 2: Audio Chunking
 """
 
 import re
@@ -130,6 +130,95 @@ def download_audio(url, output_dir):
     return output_path
 
 
+def get_audio_duration(wav_path):
+    """
+    Get duration of audio file in seconds using ffprobe.
+
+    Args:
+        wav_path (str): Path to WAV file
+
+    Returns:
+        float: Duration in seconds
+
+    Raises:
+        RuntimeError: If duration cannot be determined
+    """
+    cmd = [
+        'ffprobe',
+        '-v', 'error',
+        '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        wav_path
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, check=True, text=True)
+        duration = float(result.stdout.strip())
+
+        if duration <= 0:
+            raise RuntimeError(f"Błąd: Plik audio ma nieprawidłową długość: {duration}s")
+
+        return duration
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Błąd: Nie można odczytać długości pliku audio: {e}")
+    except ValueError:
+        raise RuntimeError("Błąd: ffprobe zwrócił nieprawidłową wartość długości")
+
+
+def split_audio(wav_path, chunk_duration_sec, output_dir):
+    """
+    Split audio file into chunks of specified duration.
+
+    Args:
+        wav_path (str): Path to input WAV file
+        chunk_duration_sec (int): Duration of each chunk in seconds
+        output_dir (str): Directory to save chunks
+
+    Returns:
+        list: List of paths to chunk files
+
+    Raises:
+        RuntimeError: If splitting fails
+    """
+    # Get audio duration
+    duration = get_audio_duration(wav_path)
+
+    # If audio is shorter than chunk duration, no splitting needed
+    if duration <= chunk_duration_sec:
+        print(f"Audio ({duration:.1f}s) jest krótsze niż chunk ({chunk_duration_sec}s) - pomijanie podziału")
+        return [wav_path]
+
+    # Calculate number of chunks
+    num_chunks = int(duration / chunk_duration_sec) + (1 if duration % chunk_duration_sec > 0 else 0)
+    print(f"Dzielenie audio ({duration:.1f}s) na {num_chunks} chunków po {chunk_duration_sec}s...")
+
+    chunk_paths = []
+    base_name = os.path.splitext(os.path.basename(wav_path))[0]
+
+    for i in range(num_chunks):
+        start_time = i * chunk_duration_sec
+        chunk_path = os.path.join(output_dir, f"{base_name}_chunk_{i+1:03d}.wav")
+
+        cmd = [
+            'ffmpeg',
+            '-i', wav_path,
+            '-ss', str(start_time),
+            '-t', str(chunk_duration_sec),
+            '-c', 'copy',  # Copy codec without re-encoding
+            '-y',  # Overwrite without asking
+            chunk_path
+        ]
+
+        try:
+            subprocess.run(cmd, capture_output=True, check=True)
+            chunk_paths.append(chunk_path)
+            print(f"  Utworzono chunk {i+1}/{num_chunks}: {os.path.basename(chunk_path)}")
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Błąd: Nie można utworzyć chunku {i+1}: {e}")
+
+    return chunk_paths
+
+
 def main():
     """Main entry point for the transcription pipeline."""
     parser = argparse.ArgumentParser(
@@ -146,6 +235,11 @@ def main():
     )
     parser.add_argument(
         '--only-download',
+        action='store_true',
+        help=argparse.SUPPRESS  # Developer flag
+    )
+    parser.add_argument(
+        '--only-chunk',
         action='store_true',
         help=argparse.SUPPRESS  # Developer flag
     )
@@ -181,7 +275,17 @@ def main():
             print(f"Sukces: Audio zostało pobrane do {audio_path}")
             return
 
-        # TODO: Add other stages (chunking, transcription, etc.)
+        # Chunk audio
+        chunk_duration_sec = 30 * 60  # 30 minutes in seconds
+        chunk_paths = split_audio(audio_path, chunk_duration_sec, str(output_dir))
+
+        if args.only_chunk:
+            print(f"Sukces: Audio podzielone na {len(chunk_paths)} chunków")
+            for i, chunk_path in enumerate(chunk_paths, 1):
+                print(f"  Chunk {i}: {os.path.basename(chunk_path)}")
+            return
+
+        # TODO: Add other stages (transcription, merging, etc.)
 
     except Exception as e:
         print(f"{e}")
