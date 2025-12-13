@@ -3,6 +3,7 @@
 YouTube to SRT Transcription Tool
 MVP Stage 1: Validate and download audio from YouTube
 MVP Stage 2: Split audio into chunks (~30 minutes each)
+MVP Stage 3: Transcribe audio using faster-whisper
 """
 
 import re
@@ -178,6 +179,99 @@ def get_audio_duration(wav_path: str) -> Tuple[bool, float]:
         return False, 0.0
 
 
+def detect_device() -> Tuple[str, str]:
+    """
+    Detect available device for faster-whisper (CUDA GPU or CPU).
+
+    Returns:
+        Tuple of (device: str, device_info: str)
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            return "cuda", f"NVIDIA GPU ({gpu_name})"
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    return "cpu", "CPU"
+
+
+def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "pl") -> Tuple[bool, str, List[Tuple[int, int, str]]]:
+    """
+    Transcribe a WAV audio file using faster-whisper.
+
+    Args:
+        wav_path: Path to the WAV file
+        model_size: Model size to use (tiny, base, small, medium, large)
+        language: Language code (default: pl for Polish)
+
+    Returns:
+        Tuple of (success: bool, message: str, segments: List[(start_ms, end_ms, text)])
+    """
+    try:
+        # Check if faster-whisper is installed
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError:
+            return False, "Błąd: faster-whisper nie jest zainstalowany. Zainstaluj: pip install faster-whisper", []
+
+        # Check if file exists
+        wav_file = Path(wav_path)
+        if not wav_file.exists():
+            return False, f"Błąd: Plik audio nie istnieje: {wav_path}", []
+
+        # Detect device
+        device, device_info = detect_device()
+        print(f"Używane urządzenie: {device_info}")
+
+        # Initialize model
+        print(f"Ładowanie modelu {model_size}...")
+        try:
+            model = WhisperModel(model_size, device=device, compute_type="float16" if device == "cuda" else "int8")
+        except Exception as e:
+            if "CUDA" in str(e) or "GPU" in str(e):
+                print(f"Ostrzeżenie: Nie można użyć GPU, przełączam na CPU. Błąd: {e}")
+                device = "cpu"
+                device_info = "CPU (fallback)"
+                model = WhisperModel(model_size, device=device, compute_type="int8")
+            else:
+                raise
+
+        print(f"Transkrypcja: {wav_file.name}...")
+
+        # Transcribe
+        segments_generator, info = model.transcribe(
+            str(wav_path),
+            language=language,
+            word_timestamps=False,
+            vad_filter=True
+        )
+
+        print(f"Wykryty język: {info.language} (prawdopodobieństwo: {info.language_probability:.2f})")
+
+        # Parse segments to list
+        segments = []
+        for segment in segments_generator:
+            start_ms = int(segment.start * 1000)
+            end_ms = int(segment.end * 1000)
+            text = segment.text.strip()
+            segments.append((start_ms, end_ms, text))
+
+        if not segments:
+            return False, "Błąd: Transkrypcja nie zwróciła żadnych segmentów (puste audio lub brak mowy)", []
+
+        print(f"Transkrypcja zakończona: {len(segments)} segmentów")
+        return True, f"Transkrypcja zakończona pomyślnie: {len(segments)} segmentów", segments
+
+    except ImportError as e:
+        return False, f"Błąd: Brak wymaganej biblioteki: {str(e)}. Zainstaluj: pip install faster-whisper", []
+    except Exception as e:
+        return False, f"Błąd podczas transkrypcji: {str(e)}", []
+
+
 def split_audio(wav_path: str, chunk_duration_sec: int = 1800, output_dir: str = ".") -> Tuple[bool, str, List[str]]:
     """
     Split a WAV audio file into chunks of specified duration.
@@ -267,6 +361,10 @@ def main():
                        help='Tylko pobierz audio, nie transkrybuj (developerski)')
     parser.add_argument('--only-chunk', action='store_true',
                        help='Tylko podziel audio, nie transkrybuj (developerski)')
+    parser.add_argument('--only-transcribe', action='store_true',
+                       help='Tylko transkrybuj chunki, nie generuj SRT (developerski)')
+    parser.add_argument('--model', default='base', choices=['tiny', 'base', 'small', 'medium', 'large'],
+                       help='Rozmiar modelu Whisper (domyślnie: base)')
 
     args = parser.parse_args()
 
@@ -310,8 +408,47 @@ def main():
     if args.only_chunk:
         return 0
 
+    # Stage 3: Transcribe each chunk
+    all_segments = []
+    chunk_offsets = []
+    current_offset_ms = 0
+
+    for idx, chunk_path in enumerate(chunk_paths, 1):
+        print(f"\nTranskrypcja chunk {idx}/{len(chunk_paths)}...")
+        success, message, segments = transcribe_chunk(chunk_path, model_size=args.model)
+
+        if not success:
+            print(message)
+            return 1
+
+        print(message)
+
+        # Store offset for this chunk
+        chunk_offsets.append(current_offset_ms)
+
+        # Adjust timestamps and add to all_segments
+        adjusted_segments = [(start_ms + current_offset_ms, end_ms + current_offset_ms, text)
+                            for start_ms, end_ms, text in segments]
+        all_segments.extend(adjusted_segments)
+
+        # Update offset for next chunk (based on last segment end time)
+        if segments:
+            last_segment_end = segments[-1][1]  # end_ms of last segment
+            current_offset_ms += last_segment_end
+
+        # Preview first few segments
+        print(f"Pierwsze segmenty z chunk {idx}:")
+        for i, (start_ms, end_ms, text) in enumerate(segments[:3], 1):
+            start_sec = start_ms / 1000
+            end_sec = end_ms / 1000
+            print(f"  [{start_sec:.1f}s - {end_sec:.1f}s] {text[:60]}...")
+
+    if args.only_transcribe:
+        print(f"\nŁącznie transkrybowanych segmentów: {len(all_segments)}")
+        return 0
+
     # Future stages will go here
-    print("Etapy 3-5 będą wdrażane w następnych fazach.")
+    print("\nEtapy 4-5 (scalanie i generowanie SRT) będą wdrażane w następnych fazach.")
 
     return 0
 
