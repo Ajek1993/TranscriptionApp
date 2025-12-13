@@ -4,6 +4,7 @@ YouTube to SRT Transcription Tool
 MVP Stage 1: Validate and download audio from YouTube
 MVP Stage 2: Split audio into chunks (~30 minutes each)
 MVP Stage 3: Transcribe audio using faster-whisper
+MVP Stage 4: Merge segments and generate SRT file
 """
 
 import re
@@ -272,6 +273,64 @@ def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "p
         return False, f"Błąd podczas transkrypcji: {str(e)}", []
 
 
+def format_srt_timestamp(ms: int) -> str:
+    """
+    Convert milliseconds to SRT timestamp format (HH:MM:SS,mmm).
+
+    Args:
+        ms: Time in milliseconds
+
+    Returns:
+        Formatted timestamp string in SRT format
+    """
+    total_seconds = ms // 1000
+    milliseconds = ms % 1000
+
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
+
+
+def write_srt(segments: List[Tuple[int, int, str]], output_path: str) -> Tuple[bool, str]:
+    """
+    Write segments to an SRT file with UTF-8 encoding.
+
+    Args:
+        segments: List of (start_ms, end_ms, text) tuples
+        output_path: Path to the output SRT file
+
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    try:
+        if not segments:
+            print("Ostrzeżenie: Brak segmentów do zapisania")
+            # Create empty SRT file with warning comment
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write("# Pusty plik SRT - brak segmentów transkrypcji\n")
+            return True, f"Zapisano pusty plik SRT (brak segmentów): {output_path}"
+
+        with open(output_path, 'w', encoding='utf-8') as f:
+            for idx, (start_ms, end_ms, text) in enumerate(segments, 1):
+                # SRT format:
+                # 1
+                # 00:00:00,000 --> 00:00:05,000
+                # Text content
+                # [blank line]
+
+                f.write(f"{idx}\n")
+                f.write(f"{format_srt_timestamp(start_ms)} --> {format_srt_timestamp(end_ms)}\n")
+                f.write(f"{text}\n")
+                f.write("\n")
+
+        return True, f"Zapisano {len(segments)} segmentów do pliku SRT: {output_path}"
+
+    except Exception as e:
+        return False, f"Błąd przy zapisie pliku SRT: {str(e)}"
+
+
 def split_audio(wav_path: str, chunk_duration_sec: int = 1800, output_dir: str = ".") -> Tuple[bool, str, List[str]]:
     """
     Split a WAV audio file into chunks of specified duration.
@@ -363,10 +422,67 @@ def main():
                        help='Tylko podziel audio, nie transkrybuj (developerski)')
     parser.add_argument('--only-transcribe', action='store_true',
                        help='Tylko transkrybuj chunki, nie generuj SRT (developerski)')
+    parser.add_argument('--test-merge', action='store_true',
+                       help='Test generowania SRT z hardcoded danymi (developerski)')
     parser.add_argument('--model', default='base', choices=['tiny', 'base', 'small', 'medium', 'large'],
                        help='Rozmiar modelu Whisper (domyślnie: base)')
+    parser.add_argument('-o', '--output', type=str,
+                       help='Nazwa pliku wyjściowego SRT (domyślnie: video_id.srt)')
 
     args = parser.parse_args()
+
+    # Test merge functionality with hardcoded data
+    if args.test_merge:
+        print("Test generowania SRT z przykładowymi danymi...")
+
+        # Hardcoded test segments simulating 2 chunks
+        # Chunk 1: 0-30 seconds
+        chunk1_segments = [
+            (0, 5000, "Witam w przykładowym filmie o transkrypcji."),
+            (5500, 12000, "To jest pierwszy segment z pierwszego chunka."),
+            (12500, 20000, "Tutaj sprawdzamy czy polskie znaki działają: ąćęłńóśźż."),
+            (20500, 30000, "Koniec pierwszego chunka.")
+        ]
+
+        # Chunk 2: 30-60 seconds (timestamps will be adjusted)
+        chunk2_segments = [
+            (0, 8000, "To jest początek drugiego chunka."),
+            (8500, 18000, "Timestampy powinny być przesunięte o 30 sekund."),
+            (18500, 28000, "Sprawdzamy merge i scalanie segmentów."),
+            (28500, 35000, "Koniec testu.")
+        ]
+
+        # Simulate merging process
+        all_segments = []
+        chunk_offsets = [0, 30000]  # Second chunk starts at 30 seconds
+
+        # Add chunk 1 segments with offset
+        for start_ms, end_ms, text in chunk1_segments:
+            all_segments.append((start_ms + chunk_offsets[0], end_ms + chunk_offsets[0], text))
+
+        # Add chunk 2 segments with offset
+        for start_ms, end_ms, text in chunk2_segments:
+            all_segments.append((start_ms + chunk_offsets[1], end_ms + chunk_offsets[1], text))
+
+        # Write to test output file
+        test_output = "test_output.srt"
+        success, message = write_srt(all_segments, test_output)
+
+        if success:
+            print(message)
+            print(f"\nPodgląd zawartości {test_output}:")
+            print("-" * 60)
+            with open(test_output, 'r', encoding='utf-8') as f:
+                content = f.read()
+                print(content[:500])  # Print first 500 chars
+                if len(content) > 500:
+                    print("...")
+            print("-" * 60)
+            print(f"\nOtwórz plik '{test_output}' w VLC lub innym odtwarzaczu aby sprawdzić napisy.")
+            return 0
+        else:
+            print(message)
+            return 1
 
     # Check if URL was provided
     if not args.url:
@@ -447,8 +563,34 @@ def main():
         print(f"\nŁącznie transkrybowanych segmentów: {len(all_segments)}")
         return 0
 
-    # Future stages will go here
-    print("\nEtapy 4-5 (scalanie i generowanie SRT) będą wdrażane w następnych fazach.")
+    # Stage 4: Generate SRT file
+    print(f"\n=== Etap 4: Generowanie pliku SRT ===")
+    print(f"Łącznie segmentów: {len(all_segments)}")
+
+    # Determine output filename
+    if args.output:
+        srt_filename = args.output
+        if not srt_filename.endswith('.srt'):
+            srt_filename += '.srt'
+    else:
+        # Extract video ID from URL for filename
+        video_id_match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', args.url)
+        if video_id_match:
+            video_id = video_id_match.group(1)
+            srt_filename = f"{video_id}.srt"
+        else:
+            srt_filename = "output.srt"
+
+    # Write SRT file
+    success, message = write_srt(all_segments, srt_filename)
+    if not success:
+        print(message)
+        return 1
+
+    print(message)
+    print(f"\n✓ Transkrypcja zakończona pomyślnie!")
+    print(f"✓ Plik SRT zapisany: {srt_filename}")
+    print(f"\nMożesz otworzyć plik SRT w VLC lub innym odtwarzaczu wideo.")
 
     return 0
 
