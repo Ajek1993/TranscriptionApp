@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-YouTube Video Transcription to SRT - Stage 2: Audio Chunking
+YouTube Video Transcription to SRT - Complete Pipeline
 """
 
 import re
@@ -9,7 +9,15 @@ import subprocess
 import argparse
 import os
 import shutil
+import tempfile
 from pathlib import Path
+
+# Parakeet-mlx will be imported when needed to provide better error messages
+try:
+    from parakeet_mlx import from_pretrained
+    PARAKEET_AVAILABLE = True
+except ImportError:
+    PARAKEET_AVAILABLE = False
 
 
 def validate_youtube_url(url):
@@ -219,6 +227,112 @@ def split_audio(wav_path, chunk_duration_sec, output_dir):
     return chunk_paths
 
 
+def transcribe_chunk(wav_path):
+    """
+    Transcribe audio chunk using parakeet-mlx.
+
+    Args:
+        wav_path (str): Path to WAV file (mono, 16kHz)
+
+    Returns:
+        list: List of segments [(start_ms, end_ms, "text"), ...]
+
+    Raises:
+        RuntimeError: If transcription fails
+    """
+    if not PARAKEET_AVAILABLE:
+        raise RuntimeError(
+            "Błąd: parakeet-mlx nie jest zainstalowany.\n"
+            "Zainstaluj: pip install parakeet-mlx"
+        )
+
+    try:
+        print(f"  Ładowanie modelu parakeet-mlx...")
+        model = from_pretrained("mlx-community/parakeet-tdt-0.6b-v3")
+
+        print(f"  Transkrypcja pliku: {os.path.basename(wav_path)}")
+        result = model.transcribe(wav_path)
+
+        # Check if we got any results
+        if not hasattr(result, 'sentences') or not result.sentences:
+            raise RuntimeError("Błąd: Transkrypcja nie zwróciła żadnych wyników")
+
+        # Convert sentences to our format
+        segments = []
+        for sentence in result.sentences:
+            start_ms = int(sentence.start * 1000)
+            end_ms = int(sentence.end * 1000)
+            text = sentence.text.strip()
+            if text:
+                segments.append((start_ms, end_ms, text))
+
+        if not segments:
+            raise RuntimeError("Błąd: Transkrypcja nie zwróciła żadnych segmentów tekstowych")
+
+        return segments
+
+    except ImportError as e:
+        raise RuntimeError(
+            f"Błąd: Nie można zaimportować parakeet-mlx: {e}\n"
+            f"Zainstaluj: pip install parakeet-mlx"
+        )
+    except Exception as e:
+        raise RuntimeError(f"Błąd podczas transkrypcji: {e}")
+
+
+def format_srt_timestamp(ms):
+    """
+    Convert milliseconds to SRT timestamp format (HH:MM:SS,mmm).
+
+    Args:
+        ms (int): Time in milliseconds
+
+    Returns:
+        str: Formatted timestamp (e.g., "00:01:23,456")
+    """
+    hours = ms // 3600000
+    ms %= 3600000
+    minutes = ms // 60000
+    ms %= 60000
+    seconds = ms // 1000
+    milliseconds = ms % 1000
+
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
+
+
+def write_srt(segments, output_path):
+    """
+    Write segments to SRT file.
+
+    Args:
+        segments (list): List of tuples [(start_ms, end_ms, "text"), ...]
+        output_path (str): Path to output SRT file
+
+    Raises:
+        RuntimeError: If writing fails
+    """
+    if not segments:
+        print("Ostrzeżenie: Brak segmentów do zapisania")
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write("")
+        return
+
+    try:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            for i, (start_ms, end_ms, text) in enumerate(segments, 1):
+                # SRT format:
+                # 1
+                # 00:00:00,000 --> 00:00:05,000
+                # Text content
+                # (blank line)
+                f.write(f"{i}\n")
+                f.write(f"{format_srt_timestamp(start_ms)} --> {format_srt_timestamp(end_ms)}\n")
+                f.write(f"{text}\n")
+                f.write("\n")
+    except Exception as e:
+        raise RuntimeError(f"Błąd podczas zapisywania pliku SRT: {e}")
+
+
 def main():
     """Main entry point for the transcription pipeline."""
     parser = argparse.ArgumentParser(
@@ -243,8 +357,34 @@ def main():
         action='store_true',
         help=argparse.SUPPRESS  # Developer flag
     )
+    parser.add_argument(
+        '--only-transcribe',
+        action='store_true',
+        help=argparse.SUPPRESS  # Developer flag
+    )
+    parser.add_argument(
+        '--test-merge',
+        action='store_true',
+        help=argparse.SUPPRESS  # Developer flag
+    )
 
     args = parser.parse_args()
+
+    # Test merge with hardcoded data
+    if args.test_merge:
+        print("Testowanie funkcji scalania i generowania SRT...")
+        test_segments = [
+            (0, 2000, "Pierwszy segment transkrypcji."),
+            (2000, 5500, "Drugi segment z różnym czasem."),
+            (5500, 10000, "Trzeci segment na końcu."),
+        ]
+        test_output = "test_output.srt"
+        write_srt(test_segments, test_output)
+        print(f"Sukces: Utworzono {test_output}")
+        print("\nZawartość pliku:")
+        with open(test_output, 'r', encoding='utf-8') as f:
+            print(f.read())
+        return
 
     # Validate arguments
     if not args.url:
@@ -264,11 +404,11 @@ def main():
         sys.exit(1)
 
     # Create temp directory
-    output_dir = Path(os.getcwd())
+    temp_dir = tempfile.mkdtemp(prefix="transcribe_")
 
     try:
         # Download audio
-        audio_path = download_audio(args.url, str(output_dir))
+        audio_path = download_audio(args.url, temp_dir)
         print(f"Pobrano audio: {audio_path}")
 
         if args.only_download:
@@ -277,7 +417,7 @@ def main():
 
         # Chunk audio
         chunk_duration_sec = 30 * 60  # 30 minutes in seconds
-        chunk_paths = split_audio(audio_path, chunk_duration_sec, str(output_dir))
+        chunk_paths = split_audio(audio_path, chunk_duration_sec, temp_dir)
 
         if args.only_chunk:
             print(f"Sukces: Audio podzielone na {len(chunk_paths)} chunków")
@@ -285,11 +425,49 @@ def main():
                 print(f"  Chunk {i}: {os.path.basename(chunk_path)}")
             return
 
-        # TODO: Add other stages (transcription, merging, etc.)
+        # Transcribe chunks
+        print(f"Rozpoczynanie transkrypcji {len(chunk_paths)} chunk(ów)...")
+        all_segments = []
+
+        for i, chunk_path in enumerate(chunk_paths, 1):
+            print(f"Transkrypcja chunk {i}/{len(chunk_paths)}...")
+            segments = transcribe_chunk(chunk_path)
+
+            # If this is not the first chunk, offset timestamps
+            if i > 1:
+                offset_ms = (i - 1) * chunk_duration_sec * 1000
+                segments = [(start + offset_ms, end + offset_ms, text)
+                           for start, end, text in segments]
+
+            all_segments.extend(segments)
+            print(f"  Chunk {i}: {len(segments)} segmentów")
+
+        if args.only_transcribe:
+            print(f"\nSukces: Transkrypcja zakończona")
+            print(f"Łącznie segmentów: {len(all_segments)}")
+            print(f"\nPrzykładowe segmenty:")
+            for start_ms, end_ms, text in all_segments[:3]:
+                print(f"  [{start_ms}ms - {end_ms}ms] {text}")
+            return
+
+        # Generate SRT file
+        output_filename = args.output if args.output else f"{video_id}.srt"
+        print(f"\nGenerowanie pliku SRT: {output_filename}...")
+        write_srt(all_segments, output_filename)
+        print(f"Sukces: Zapisano {output_filename}")
+        print(f"Łącznie segmentów: {len(all_segments)}")
 
     except Exception as e:
         print(f"{e}")
         sys.exit(1)
+    finally:
+        # Cleanup temporary files
+        if 'temp_dir' in locals() and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+                print(f"\nUsunięto pliki tymczasowe: {temp_dir}")
+            except Exception as e:
+                print(f"\nOstrzeżenie: Nie można usunąć plików tymczasowych: {e}")
 
 
 if __name__ == '__main__':
