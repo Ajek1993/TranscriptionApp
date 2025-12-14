@@ -200,6 +200,83 @@ def download_audio(url: str, output_dir: str = ".") -> Tuple[bool, str, str]:
     except Exception as e:
         return False, f"Błąd przy pobieraniu: {str(e)}", ""
 
+def download_video(url: str, output_dir: str = ".", quality: str = "1080") -> Tuple[bool, str, str]:
+    """
+    Download video from YouTube in specified quality.
+
+    Args:
+        url: YouTube URL
+        output_dir: Directory to save the video file
+        quality: Preferred video quality (default: "1080")
+
+    Returns:
+        Tuple of (success: bool, message: str, video_path: str)
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Extract video ID for naming
+    video_id_match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', url)
+    if not video_id_match:
+        return False, "Błąd: Nie udało się wyodrębnić ID wideo z URL", ""
+
+    video_id = video_id_match.group(1)
+    video_file = output_path / f"{video_id}.mp4"
+
+    try:
+        print(f"Pobieranie wideo z YouTube w jakości {quality}p... ({url})")
+
+        # Format selection: prefer 1080p, fallback to best available
+        # bestvideo[height<=1080]+bestaudio/best[height<=1080]/best
+        format_str = f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best"
+
+        cmd = [
+            'yt-dlp',
+            '-f', format_str,
+            '--merge-output-format', 'mp4',
+            '-o', str(video_file),
+            url
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+
+        if result.returncode != 0:
+            error_msg = result.stderr if result.stderr else "Nieznany błąd yt-dlp"
+            if "private" in error_msg.lower() or "not available" in error_msg.lower():
+                return False, "Błąd: Nie można pobrać filmu. Film może być prywatny, usunięty lub niedostępny w Twoim regionie.", ""
+            else:
+                return False, f"Błąd yt-dlp: {error_msg}", ""
+
+        if not video_file.exists():
+            return False, f"Błąd: Plik wideo nie został utworzony: {video_file}", ""
+
+        # Get video info with ffprobe
+        probe_cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                     '-show_entries', 'stream=width,height,codec_name',
+                     '-of', 'default=noprint_wrappers=1:nokey=1',
+                     str(video_file)]
+        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
+
+        if probe_result.returncode == 0:
+            output_info = probe_result.stdout.strip().split('\n')
+            if len(output_info) >= 3:
+                width = output_info[0]
+                height = output_info[1]
+                codec = output_info[2]
+                print(f"Wideo pobrane: {width}x{height}, codec: {codec}")
+            else:
+                print(f"Wideo pobrane: {video_file}")
+        else:
+            print(f"Wideo pobrane: {video_file}")
+
+        return True, f"Wideo pobrane pomyślnie: {video_file}", str(video_file)
+
+    except subprocess.TimeoutExpired:
+        return False, "Błąd: Pobieranie przerwane (timeout). Spróbuj ponownie.", ""
+    except Exception as e:
+        return False, f"Błąd przy pobieraniu wideo: {str(e)}", ""
+
+
 
 def extract_audio_from_video(video_path: str, output_dir: str = ".") -> Tuple[bool, str, str]:
     """
@@ -1034,7 +1111,10 @@ def main():
     parser.add_argument('-o', '--output', type=str,
                        help='Nazwa pliku wyjściowego SRT (domyślnie: video_id.srt lub nazwa_pliku.srt)')
     parser.add_argument('--dub', action='store_true',
-                       help='Generuj dubbing TTS')
+                       help='Generuj dubbing TTS (wymaga lokalnego pliku lub pobiera z YouTube)')
+    parser.add_argument('--video-quality', type=str, default='1080',
+                       choices=['720', '1080', '1440', '2160'],
+                       help='Jakość wideo przy pobieraniu z YouTube (domyślnie: 1080)')
     parser.add_argument('--tts-voice', type=str, default='pl-PL-MarekNeural',
                        choices=['pl-PL-MarekNeural', 'pl-PL-ZofiaNeural'],
                        help='Głos TTS (domyślnie: pl-PL-MarekNeural)')
@@ -1121,14 +1201,10 @@ def main():
             print(tts_msg)
             return 1
 
-    # Validate dubbing requires video file
-    if args.dub and args.url:
-        print("Błąd: Dubbing wymaga lokalnego pliku wideo (użyj --local)")
-        return 1
-
     # Create temporary directory for intermediate files
     temp_dir = None
     original_video_path = None
+    should_cleanup_video = False  # Flag to track if we downloaded video to temp
     
     try:
         temp_dir = tempfile.mkdtemp(prefix="transcribe_")
@@ -1152,6 +1228,7 @@ def main():
 
             print(message)
             input_stem = Path(args.local).stem
+            
         else:
             # YouTube mode
             # Validate URL
@@ -1159,17 +1236,37 @@ def main():
                 print("Błąd: Niepoprawny URL YouTube. Podaj link w formacie: https://www.youtube.com/watch?v=VIDEO_ID")
                 return 1
 
-            # Download audio from YouTube
-            success, message, audio_path = download_audio(args.url, output_dir=temp_dir)
-            if not success:
-                print(message)
-                return 1
-
-            print(message)
-
             # Extract video ID for naming
             video_id_match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', args.url)
             input_stem = video_id_match.group(1) if video_id_match else "output"
+
+            # If dubbing is requested, download full video
+            if args.dub:
+                print(f"\n=== Dubbing włączony: Pobieranie pełnego wideo ===")
+                success, message, video_path = download_video(args.url, output_dir=temp_dir, quality=args.video_quality)
+                if not success:
+                    print(message)
+                    return 1
+
+                print(message)
+                original_video_path = video_path
+                should_cleanup_video = True  # Will be cleaned up with temp_dir
+
+                # Extract audio from downloaded video
+                success, message, audio_path = extract_audio_from_video(video_path, output_dir=temp_dir)
+                if not success:
+                    print(message)
+                    return 1
+
+                print(message)
+            else:
+                # Only audio needed - download audio only
+                success, message, audio_path = download_audio(args.url, output_dir=temp_dir)
+                if not success:
+                    print(message)
+                    return 1
+
+                print(message)
 
         if args.only_download:
             # For --only-download, copy file to current directory before cleanup
