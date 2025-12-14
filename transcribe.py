@@ -20,6 +20,16 @@ from pathlib import Path
 from typing import Tuple, List
 from tqdm import tqdm
 
+# Supported video formats for local files
+SUPPORTED_VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov'}
+
+# Translation support
+try:
+    from deep_translator import GoogleTranslator
+    TRANSLATOR_AVAILABLE = True
+except ImportError:
+    TRANSLATOR_AVAILABLE = False
+
 
 def validate_youtube_url(url: str) -> bool:
     """
@@ -33,6 +43,28 @@ def validate_youtube_url(url: str) -> bool:
     """
     youtube_regex = r'(https?://)?(www\.)?(youtube|youtu|youtube-nocookie)\.(com|be)/'
     return bool(re.match(youtube_regex, url))
+
+
+def validate_video_file(file_path: str) -> Tuple[bool, str]:
+    """
+    Validate that the provided path is a valid, supported video file.
+
+    Args:
+        file_path: Path to the video file
+
+    Returns:
+        Tuple of (is_valid: bool, error_message: str)
+    """
+    path = Path(file_path)
+
+    if not path.exists():
+        return False, f"Błąd: Plik nie istnieje: {file_path}"
+
+    if path.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS:
+        supported = ', '.join(SUPPORTED_VIDEO_EXTENSIONS)
+        return False, f"Błąd: Nieobsługiwany format. Wspierane: {supported}"
+
+    return True, "OK"
 
 
 def check_dependencies() -> Tuple[bool, str]:
@@ -146,6 +178,69 @@ def download_audio(url: str, output_dir: str = ".") -> Tuple[bool, str, str]:
         return False, "Błąd: Pobieranie przerwane (timeout). Spróbuj ponownie.", ""
     except Exception as e:
         return False, f"Błąd przy pobieraniu: {str(e)}", ""
+
+
+def extract_audio_from_video(video_path: str, output_dir: str = ".") -> Tuple[bool, str, str]:
+    """
+    Extract audio from a local video file and convert to WAV (mono, 16kHz, PCM 16-bit).
+
+    Args:
+        video_path: Path to the local video file
+        output_dir: Directory to save the extracted audio
+
+    Returns:
+        Tuple of (success: bool, message: str, audio_path: str)
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Generate output filename based on input video filename
+    video_file = Path(video_path)
+    audio_file = output_path / f"{video_file.stem}.wav"
+
+    try:
+        print(f"Ekstrakcja audio z pliku wideo... ({video_path})")
+
+        cmd = [
+            'ffmpeg',
+            '-i', str(video_path),
+            '-vn',  # No video
+            '-acodec', 'pcm_s16le',  # PCM 16-bit
+            '-ar', '16000',  # 16kHz sample rate
+            '-ac', '1',  # Mono
+            '-y',  # Overwrite output
+            str(audio_file)
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+
+        if result.returncode != 0:
+            error_msg = result.stderr if result.stderr else "Nieznany błąd ffmpeg"
+            return False, f"Błąd ffmpeg: {error_msg}", ""
+
+        if not audio_file.exists():
+            return False, f"Błąd: Plik audio nie został utworzony: {audio_file}", ""
+
+        print(f"Audio wyekstrahowane: {audio_file}")
+
+        # Verify audio format with ffprobe
+        probe_cmd = ['ffprobe', '-v', 'error', '-show_entries',
+                     'stream=channels,sample_rate', '-of', 'default=noprint_wrappers=1:nokey=1:noescapes=1',
+                     str(audio_file)]
+        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
+
+        if probe_result.returncode == 0:
+            output_info = probe_result.stdout.strip().split('\n')
+            channels = int(output_info[0]) if len(output_info) > 0 else 0
+            sample_rate = int(output_info[1]) if len(output_info) > 1 else 0
+            print(f"Format audio: {channels} kanał(y), {sample_rate} Hz")
+
+        return True, f"Audio wyekstrahowane pomyślnie: {audio_file}", str(audio_file)
+
+    except subprocess.TimeoutExpired:
+        return False, "Błąd: Ekstrakcja audio przerwana (timeout). Spróbuj ponownie.", ""
+    except Exception as e:
+        return False, f"Błąd przy ekstrakcji audio: {str(e)}", ""
 
 
 def get_audio_duration(wav_path: str) -> Tuple[bool, float]:
@@ -302,6 +397,78 @@ def format_srt_timestamp(ms: int) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
 
 
+def translate_segments(
+    segments: List[Tuple[int, int, str]],
+    source_lang: str,
+    target_lang: str,
+    batch_size: int = 50
+) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
+    """
+    Translate text content of segments while preserving timestamps.
+
+    Args:
+        segments: List of (start_ms, end_ms, text) tuples
+        source_lang: Source language code ('pl' or 'en')
+        target_lang: Target language code ('pl' or 'en')
+        batch_size: Number of segments to translate in one batch
+
+    Returns:
+        Tuple of (success: bool, message: str, translated_segments: List)
+    """
+    if not TRANSLATOR_AVAILABLE:
+        return False, "Błąd: deep-translator nie jest zainstalowany. Zainstaluj: pip install deep-translator", []
+
+    if not segments:
+        return True, "Brak segmentów do tłumaczenia", []
+
+    try:
+        # Map language codes to deep-translator format
+        lang_map = {'pl': 'polish', 'en': 'english'}
+        src = lang_map.get(source_lang, source_lang)
+        tgt = lang_map.get(target_lang, target_lang)
+
+        translator = GoogleTranslator(source_language=src, target_language=tgt)
+
+        translated_segments = []
+
+        print(f"Tłumaczenie {len(segments)} segmentów ({source_lang} -> {target_lang})...")
+
+        # Process in batches for efficiency
+        with tqdm(total=len(segments), desc="Translating", unit="seg") as pbar:
+            for i in range(0, len(segments), batch_size):
+                batch = segments[i:i + batch_size]
+
+                # Extract texts for batch translation
+                texts = [text for _, _, text in batch]
+
+                # Translate texts
+                try:
+                    # deep-translator doesn't have batch, so translate individually
+                    translated_texts = []
+                    for text in texts:
+                        try:
+                            translated_text = translator.translate(text)
+                            translated_texts.append(translated_text)
+                        except Exception as e:
+                            # Keep original text on translation error
+                            tqdm.write(f"Ostrzeżenie: Nie udało się przetłumaczyć tekstu: {text[:50]}... ({str(e)})")
+                            translated_texts.append(text)
+                except Exception as e:
+                    return False, f"Błąd podczas tłumaczenia: {str(e)}", []
+
+                # Rebuild segments with translated text
+                for j, (start_ms, end_ms, _) in enumerate(batch):
+                    translated_text = translated_texts[j] if j < len(translated_texts) else batch[j][2]
+                    translated_segments.append((start_ms, end_ms, translated_text))
+
+                pbar.update(len(batch))
+
+        return True, f"Przetłumaczono {len(translated_segments)} segmentów", translated_segments
+
+    except Exception as e:
+        return False, f"Błąd podczas tłumaczenia: {str(e)}", []
+
+
 def write_srt(segments: List[Tuple[int, int, str]], output_path: str) -> Tuple[bool, str]:
     """
     Write segments to an SRT file with UTF-8 encoding.
@@ -451,9 +618,11 @@ def cleanup_temp_files(temp_dir: str, retries: int = 3, delay: float = 0.2) -> N
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Pobierz audio z YouTube i konwertuj na transkrypcję SRT'
+        description='Transkrypcja z YouTube lub lokalnych plików wideo na SRT'
     )
     parser.add_argument('url', nargs='?', help='URL YouTube do transkrypcji')
+    parser.add_argument('-l', '--local', type=str,
+                       help='Ścieżka do lokalnego pliku wideo (MP4, MKV, AVI, MOV)')
     parser.add_argument('--only-download', action='store_true',
                        help='Tylko pobierz audio, nie transkrybuj (developerski)')
     parser.add_argument('--only-chunk', action='store_true',
@@ -464,8 +633,12 @@ def main():
                        help='Test generowania SRT z hardcoded danymi (developerski)')
     parser.add_argument('--model', default='base', choices=['tiny', 'base', 'small', 'medium', 'large'],
                        help='Rozmiar modelu Whisper (domyślnie: base)')
+    parser.add_argument('--language', type=str, default='pl',
+                       help='Język transkrypcji (domyślnie: pl)')
+    parser.add_argument('-t', '--translate', type=str, choices=['pl-en', 'en-pl'],
+                       help='Tłumaczenie (pl-en: polski->angielski, en-pl: angielski->polski)')
     parser.add_argument('-o', '--output', type=str,
-                       help='Nazwa pliku wyjściowego SRT (domyślnie: video_id.srt)')
+                       help='Nazwa pliku wyjściowego SRT (domyślnie: video_id.srt lub nazwa_pliku.srt)')
 
     args = parser.parse_args()
 
@@ -522,15 +695,12 @@ def main():
             print(message)
             return 1
 
-    # Check if URL was provided
-    if not args.url:
-        print("Błąd: Podaj URL YouTube")
-        print("Użycie: python transcribe.py \"https://www.youtube.com/watch?v=VIDEO_ID\"")
-        return 1
-
-    # Validate URL
-    if not validate_youtube_url(args.url):
-        print("Błąd: Niepoprawny URL YouTube. Podaj link w formacie: https://www.youtube.com/watch?v=VIDEO_ID")
+    # Check input source (YouTube URL or local file)
+    if not args.url and not args.local:
+        print("Błąd: Podaj URL YouTube lub ścieżkę do lokalnego pliku wideo")
+        print("Użycie:")
+        print("  - YouTube: python transcribe.py \"https://www.youtube.com/watch?v=VIDEO_ID\"")
+        print("  - Lokalny: python transcribe.py --local \"C:\\path\\to\\video.mp4\"")
         return 1
 
     # Check dependencies
@@ -545,13 +715,40 @@ def main():
         temp_dir = tempfile.mkdtemp(prefix="transcribe_")
         print(f"Katalog tymczasowy: {temp_dir}")
 
-        # Download audio to temporary directory
-        success, message, audio_path = download_audio(args.url, output_dir=temp_dir)
-        if not success:
-            print(message)
-            return 1
+        # Process input source: local file or YouTube URL
+        if args.local:
+            # Local file mode
+            is_valid, error_msg = validate_video_file(args.local)
+            if not is_valid:
+                print(error_msg)
+                return 1
 
-        print(message)
+            # Extract audio from local video
+            success, message, audio_path = extract_audio_from_video(args.local, output_dir=temp_dir)
+            if not success:
+                print(message)
+                return 1
+
+            print(message)
+            input_stem = Path(args.local).stem
+        else:
+            # YouTube mode
+            # Validate URL
+            if not validate_youtube_url(args.url):
+                print("Błąd: Niepoprawny URL YouTube. Podaj link w formacie: https://www.youtube.com/watch?v=VIDEO_ID")
+                return 1
+
+            # Download audio from YouTube
+            success, message, audio_path = download_audio(args.url, output_dir=temp_dir)
+            if not success:
+                print(message)
+                return 1
+
+            print(message)
+
+            # Extract video ID for naming
+            video_id_match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', args.url)
+            input_stem = video_id_match.group(1) if video_id_match else "output"
 
         if args.only_download:
             # For --only-download, copy file to current directory before cleanup
@@ -605,6 +802,7 @@ def main():
                 success, message, segments = transcribe_chunk(
                     chunk_path,
                     model_size=args.model,
+                    language=args.language,
                     segment_progress_bar=segment_pbar
                 )
 
@@ -632,6 +830,30 @@ def main():
                 chunk_pbar.set_postfix_str(f"{len(segments)} segments, total: {len(all_segments)}")
                 chunk_pbar.update(1)
 
+        # Translation step (if requested)
+        if args.translate:
+            print(f"\n=== Etap: Tłumaczenie ===")
+
+            # Parse translation direction
+            src_lang, tgt_lang = args.translate.split('-')
+
+            # Validate source language matches transcription language
+            if args.language != src_lang:
+                print(f"Ostrzeżenie: Język transkrypcji ({args.language}) różni się od źródłowego języka tłumaczenia ({src_lang})")
+
+            success, message, translated_segments = translate_segments(
+                all_segments,
+                source_lang=src_lang,
+                target_lang=tgt_lang
+            )
+
+            if not success:
+                print(message)
+                return 1
+
+            print(message)
+            all_segments = translated_segments
+
         if args.only_transcribe:
             print(f"\nŁącznie transkrybowanych segmentów: {len(all_segments)}")
             return 0
@@ -646,13 +868,7 @@ def main():
             if not srt_filename.endswith('.srt'):
                 srt_filename += '.srt'
         else:
-            # Extract video ID from URL for filename
-            video_id_match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', args.url)
-            if video_id_match:
-                video_id = video_id_match.group(1)
-                srt_filename = f"{video_id}.srt"
-            else:
-                srt_filename = "output.srt"
+            srt_filename = f"{input_stem}.srt"
 
         # Write SRT file to current directory
         success, message = write_srt(all_segments, srt_filename)
