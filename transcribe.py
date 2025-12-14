@@ -6,6 +6,7 @@ MVP Stage 2: Split audio into chunks (~30 minutes each)
 MVP Stage 3: Transcribe audio using faster-whisper
 MVP Stage 4: Merge segments and generate SRT file
 MVP Stage 5: Complete pipeline with CLI and automatic cleanup
+MVP Stage 6: TTS dubbing with Edge TTS
 """
 
 import re
@@ -29,6 +30,14 @@ try:
     TRANSLATOR_AVAILABLE = True
 except ImportError:
     TRANSLATOR_AVAILABLE = False
+
+# Edge TTS support
+try:
+    import edge_tts
+    import asyncio
+    EDGE_TTS_AVAILABLE = True
+except ImportError:
+    EDGE_TTS_AVAILABLE = False
 
 
 def validate_youtube_url(url: str) -> bool:
@@ -109,6 +118,18 @@ def check_dependencies() -> Tuple[bool, str]:
         return False, error_msg
 
     return True, "Wszystkie zależności dostępne"
+
+
+def check_edge_tts_dependency() -> Tuple[bool, str]:
+    """
+    Check if edge-tts is available for TTS dubbing.
+
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    if not EDGE_TTS_AVAILABLE:
+        return False, "Błąd: edge-tts nie jest zainstalowany. Zainstaluj: pip install edge-tts"
+    return True, "edge-tts dostępny"
 
 
 def download_audio(url: str, output_dir: str = ".") -> Tuple[bool, str, str]:
@@ -280,6 +301,22 @@ def get_audio_duration(wav_path: str) -> Tuple[bool, float]:
         return False, 0.0
 
 
+def get_audio_duration_ms(audio_path: str) -> Tuple[bool, int]:
+    """
+    Get the duration of an audio file in milliseconds using ffprobe.
+
+    Args:
+        audio_path: Path to the audio file
+
+    Returns:
+        Tuple of (success: bool, duration_ms: int)
+    """
+    success, duration_sec = get_audio_duration(audio_path)
+    if success:
+        return True, int(duration_sec * 1000)
+    return False, 0
+
+
 def detect_device() -> Tuple[str, str]:
     """
     Detect available device for faster-whisper (CUDA GPU or CPU).
@@ -422,12 +459,8 @@ def translate_segments(
         return True, "Brak segmentów do tłumaczenia", []
 
     try:
-        # Map language codes to deep-translator format
-        lang_map = {'pl': 'polish', 'en': 'english'}
-        src = lang_map.get(source_lang, source_lang)
-        tgt = lang_map.get(target_lang, target_lang)
-
-        translator = GoogleTranslator(source_language=src, target_language=tgt)
+        # Użyj bezpośrednio skrótów języków - GoogleTranslator je obsługuje
+        translator = GoogleTranslator(source=source_lang, target=target_lang)
 
         translated_segments = []
 
@@ -443,7 +476,6 @@ def translate_segments(
 
                 # Translate texts
                 try:
-                    # deep-translator doesn't have batch, so translate individually
                     translated_texts = []
                     for text in texts:
                         try:
@@ -586,6 +618,368 @@ def split_audio(wav_path: str, chunk_duration_sec: int = 1800, output_dir: str =
         return False, f"Błąd przy dzieleniu audio: {str(e)}", []
 
 
+async def generate_tts_for_segment(
+    text: str,
+    output_path: str,
+    voice: str = "pl-PL-MarekNeural",
+    rate: str = "+0%"
+) -> Tuple[bool, str, float]:
+    """
+    Generate TTS audio for a single text segment with speed control.
+
+    Args:
+        text: Text to convert to speech
+        output_path: Path to save the MP3 file
+        voice: Voice name (default: pl-PL-MarekNeural)
+        rate: Speech rate adjustment (e.g., "+0%", "+20%", "+50%")
+
+    Returns:
+        Tuple of (success: bool, message: str, duration_seconds: float)
+    """
+    try:
+        communicate = edge_tts.Communicate(text, voice, rate=rate)
+        await communicate.save(output_path)
+
+        # Get duration of generated audio
+        success, duration_sec = get_audio_duration(output_path)
+        if not success:
+            return False, "Błąd: Nie można odczytać długości wygenerowanego TTS", 0.0
+
+        return True, "TTS wygenerowany", duration_sec
+
+    except Exception as e:
+        return False, f"Błąd generowania TTS: {str(e)}", 0.0
+
+
+def generate_tts_segments(
+    segments: List[Tuple[int, int, str]],
+    output_dir: str,
+    voice: str = "pl-PL-MarekNeural"
+) -> Tuple[bool, str, List[Tuple[int, str, float]]]:
+    """
+    Generate TTS for all segments with automatic speed adjustment.
+
+    Args:
+        segments: List of (start_ms, end_ms, text) tuples
+        output_dir: Directory to save TTS files
+        voice: Voice name
+
+    Returns:
+        Tuple of (success: bool, message: str, tts_files: List[(start_ms, path, duration_sec)])
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    tts_files = []
+
+    print(f"Generowanie TTS dla {len(segments)} segmentów...")
+
+    with tqdm(total=len(segments), desc="Generating TTS", unit="seg") as pbar:
+        for idx, (start_ms, end_ms, text) in enumerate(segments):
+            # Skip empty text
+            if not text.strip():
+                pbar.update(1)
+                continue
+
+            slot_duration_ms = end_ms - start_ms
+            slot_duration_sec = slot_duration_ms / 1000.0
+
+            tts_file = output_path / f"tts_{idx:04d}.mp3"
+
+            # Try generating with normal speed first
+            rate = "+0%"
+            max_retries = 3
+
+            for retry in range(max_retries):
+                try:
+                    success, message, tts_duration = asyncio.run(
+                        generate_tts_for_segment(text, str(tts_file), voice, rate)
+                    )
+
+                    if not success:
+                        if retry < max_retries - 1:
+                            time.sleep(0.5 * (retry + 1))  # Exponential backoff
+                            continue
+                        else:
+                            tqdm.write(f"Ostrzeżenie: Nie udało się wygenerować TTS dla segmentu {idx}: {message}")
+                            pbar.update(1)
+                            break
+
+                    # Check if TTS is too long for the slot
+                    if tts_duration > slot_duration_sec * 1.5:
+                        # Calculate required speed increase (max +50%)
+                        speed_multiplier = min(tts_duration / slot_duration_sec, 1.5)
+                        rate_percent = int((speed_multiplier - 1.0) * 100)
+                        rate_percent = min(rate_percent, 50)  # Cap at +50%
+                        rate = f"+{rate_percent}%"
+
+                        tqdm.write(f"Segment {idx}: TTS za długi ({tts_duration:.2f}s > {slot_duration_sec:.2f}s), przyspieszam do {rate}")
+
+                        # Regenerate with adjusted speed
+                        success, message, tts_duration = asyncio.run(
+                            generate_tts_for_segment(text, str(tts_file), voice, rate)
+                        )
+
+                        if not success:
+                            if retry < max_retries - 1:
+                                time.sleep(0.5 * (retry + 1))
+                                continue
+                            else:
+                                tqdm.write(f"Ostrzeżenie: Nie udało się wygenerować TTS dla segmentu {idx}: {message}")
+                                pbar.update(1)
+                                break
+
+                    tts_files.append((start_ms, str(tts_file), tts_duration))
+                    pbar.update(1)
+                    break
+
+                except Exception as e:
+                    if retry < max_retries - 1:
+                        time.sleep(0.5 * (retry + 1))
+                    else:
+                        tqdm.write(f"Ostrzeżenie: Błąd przy generowaniu TTS dla segmentu {idx}: {str(e)}")
+                        pbar.update(1)
+                        break
+
+    if not tts_files:
+        return False, "Błąd: Nie wygenerowano żadnych plików TTS", []
+
+    return True, f"Wygenerowano {len(tts_files)} plików TTS", tts_files
+
+
+def create_tts_audio_track(
+    tts_files: List[Tuple[int, str, float]],
+    total_duration_ms: int,
+    output_path: str
+) -> Tuple[bool, str]:
+    """
+    Combine TTS segments into a single audio track using concat demuxer.
+    This avoids amix completely and ensures constant volume.
+
+    Args:
+        tts_files: List of (start_ms, file_path, duration_sec) tuples
+        total_duration_ms: Total duration of the final track in milliseconds
+        output_path: Path to save the combined audio
+
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    try:
+        if not tts_files:
+            return False, "Błąd: Brak plików TTS do połączenia"
+
+        temp_dir = Path(output_path).parent
+        
+        # Sort segments by start time
+        sorted_segments = sorted(tts_files, key=lambda x: x[0])
+        
+        # Build filter_complex that creates silence gaps and concatenates
+        filter_parts = []
+        input_args = []
+        concat_inputs = []
+        
+        current_time_ms = 0
+        
+        for idx, (start_ms, file_path, duration_sec) in enumerate(sorted_segments):
+            # Add input file
+            input_args.extend(['-i', str(file_path)])
+            
+            # If there's a gap before this segment, add silence
+            if start_ms > current_time_ms:
+                gap_duration_sec = (start_ms - current_time_ms) / 1000.0
+                silence_label = f"silence{idx}"
+                filter_parts.append(
+                    f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={gap_duration_sec}[{silence_label}]"
+                )
+                concat_inputs.append(f"[{silence_label}]")
+            
+            # Add this segment (convert to stereo if needed)
+            segment_label = f"seg{idx}"
+            filter_parts.append(
+                f"[{idx}:a]aformat=sample_rates=44100:channel_layouts=stereo[{segment_label}]"
+            )
+            concat_inputs.append(f"[{segment_label}]")
+            
+            # Update current time
+            segment_duration_ms = int(duration_sec * 1000)
+            current_time_ms = start_ms + segment_duration_ms
+        
+        # Add final silence to reach total duration
+        if current_time_ms < total_duration_ms:
+            final_gap_sec = (total_duration_ms - current_time_ms) / 1000.0
+            filter_parts.append(
+                f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={final_gap_sec}[final_silence]"
+            )
+            concat_inputs.append("[final_silence]")
+        
+        # Concatenate all parts
+        concat_input_str = ''.join(concat_inputs)
+        filter_parts.append(
+            f"{concat_input_str}concat=n={len(concat_inputs)}:v=0:a=1[out]"
+        )
+        
+        filter_complex = ';'.join(filter_parts)
+        
+        print(f"Łączenie {len(sorted_segments)} segmentów TTS...")
+        
+        cmd = [
+            'ffmpeg', '-y',
+            *input_args,
+            '-filter_complex', filter_complex,
+            '-map', '[out]',
+            '-ar', '44100',
+            '-ac', '2',
+            '-c:a', 'pcm_s16le',
+            str(output_path)
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+
+        if result.returncode != 0:
+            return False, f"Błąd ffmpeg przy łączeniu TTS: {result.stderr}"
+
+        if not Path(output_path).exists():
+            return False, f"Błąd: Plik TTS nie został utworzony: {output_path}"
+
+        return True, f"Ścieżka TTS utworzona: {output_path}"
+
+    except subprocess.TimeoutExpired:
+        return False, "Błąd: Łączenie TTS przerwane (timeout)"
+    except Exception as e:
+        return False, f"Błąd przy tworzeniu ścieżki TTS: {str(e)}"
+
+
+def mix_audio_tracks(
+    original_audio_path: str,
+    tts_audio_path: str,
+    output_path: str,
+    original_volume: float = 0.2,
+    tts_volume: float = 1.0
+) -> Tuple[bool, str]:
+    """
+    Mix audio using completely manual approach without amix filter.
+    """
+    try:
+        temp_dir = Path(output_path).parent
+        
+        # Step 1: Apply volume to original (create temp file)
+        temp_original = temp_dir / "temp_original_vol.wav"
+        cmd1 = [
+            'ffmpeg', '-y',
+            '-i', str(original_audio_path),
+            '-af', f'volume={original_volume}',
+            '-ar', '44100',
+            '-ac', '2',
+            '-c:a', 'pcm_s16le',
+            str(temp_original)
+        ]
+        print(f"Skalowanie oryginalnego audio do {original_volume}...")
+        subprocess.run(cmd1, capture_output=True, text=True, timeout=300, check=True)
+        
+        # Step 2: Apply volume to TTS (create temp file)
+        temp_tts = temp_dir / "temp_tts_vol.wav"
+        cmd2 = [
+            'ffmpeg', '-y',
+            '-i', str(tts_audio_path),
+            '-af', f'volume={tts_volume}',
+            '-ar', '44100',
+            '-ac', '2',
+            '-c:a', 'pcm_s16le',
+            str(temp_tts)
+        ]
+        print(f"Skalowanie TTS audio do {tts_volume}...")
+        subprocess.run(cmd2, capture_output=True, text=True, timeout=300, check=True)
+        
+        # Step 3: Mix using amerge + pan (pure mathematical addition, no AGC)
+        cmd3 = [
+            'ffmpeg', '-y',
+            '-i', str(temp_original),
+            '-i', str(temp_tts),
+            '-filter_complex',
+            '[0:a][1:a]amerge=inputs=2[merged];'
+            '[merged]pan=stereo|c0=c0+c2|c1=c1+c3[out]',
+            '-map', '[out]',
+            '-ar', '44100',
+            '-ac', '2',
+            '-c:a', 'pcm_s16le',
+            str(output_path)
+        ]
+        
+        print(f"Mixowanie ścieżek audio...")
+        result = subprocess.run(cmd3, capture_output=True, text=True, timeout=1800)
+        
+        # Cleanup temp files
+        try:
+            if temp_original.exists():
+                temp_original.unlink()
+            if temp_tts.exists():
+                temp_tts.unlink()
+        except:
+            pass
+
+        if result.returncode != 0:
+            return False, f"Błąd ffmpeg przy mixowaniu audio: {result.stderr}"
+
+        if not Path(output_path).exists():
+            return False, f"Błąd: Plik zmixowanego audio nie został utworzony: {output_path}"
+
+        return True, f"Audio zmixowane: {output_path}"
+
+    except subprocess.CalledProcessError as e:
+        return False, f"Błąd przy przetwarzaniu audio: {e}"
+    except subprocess.TimeoutExpired:
+        return False, "Błąd: Mixowanie audio przerwane (timeout)"
+    except Exception as e:
+        return False, f"Błąd przy mixowaniu audio: {str(e)}"
+
+
+def create_dubbed_video(
+    original_video_path: str,
+    mixed_audio_path: str,
+    output_video_path: str
+) -> Tuple[bool, str]:
+    """
+    Create final dubbed video by combining original video with mixed audio.
+
+    Args:
+        original_video_path: Path to original video file
+        mixed_audio_path: Path to mixed audio (original + TTS)
+        output_video_path: Path to save dubbed video
+
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    try:
+        cmd = [
+            'ffmpeg',
+            '-y',
+            '-i', str(original_video_path),
+            '-i', str(mixed_audio_path),
+            '-map', '0:v:0',
+            '-map', '1:a:0',
+            '-c:v', 'copy',
+            '-c:a', 'aac',
+            '-b:a', '192k',
+            '-shortest',
+            str(output_video_path)
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+
+        if result.returncode != 0:
+            return False, f"Błąd ffmpeg przy tworzeniu wideo z dubbingiem: {result.stderr}"
+
+        if not Path(output_video_path).exists():
+            return False, f"Błąd: Wideo z dubbingiem nie zostało utworzone: {output_video_path}"
+
+        return True, f"Wideo z dubbingiem utworzone: {output_video_path}"
+
+    except subprocess.TimeoutExpired:
+        return False, "Błąd: Tworzenie wideo przerwane (timeout)"
+    except Exception as e:
+        return False, f"Błąd przy tworzeniu wideo: {str(e)}"
+
+
 def cleanup_temp_files(temp_dir: str, retries: int = 3, delay: float = 0.2) -> None:
     """
     Clean up temporary files and directories with retry mechanism for Windows file locks.
@@ -639,6 +1033,17 @@ def main():
                        help='Tłumaczenie (pl-en: polski->angielski, en-pl: angielski->polski)')
     parser.add_argument('-o', '--output', type=str,
                        help='Nazwa pliku wyjściowego SRT (domyślnie: video_id.srt lub nazwa_pliku.srt)')
+    parser.add_argument('--dub', action='store_true',
+                       help='Generuj dubbing TTS')
+    parser.add_argument('--tts-voice', type=str, default='pl-PL-MarekNeural',
+                       choices=['pl-PL-MarekNeural', 'pl-PL-ZofiaNeural'],
+                       help='Głos TTS (domyślnie: pl-PL-MarekNeural)')
+    parser.add_argument('--tts-volume', type=float, default=1.0,
+                       help='Głośność TTS 0.0-2.0 (domyślnie: 1.0)')
+    parser.add_argument('--original-volume', type=float, default=0.2,
+                       help='Głośność oryginalnego audio 0.0-1.0 (domyślnie: 0.2)')
+    parser.add_argument('--dub-output', type=str,
+                       help='Nazwa pliku wyjściowego z dubbingiem (domyślnie: video_id_dubbed.mp4)')
 
     args = parser.parse_args()
 
@@ -709,8 +1114,22 @@ def main():
         print(deps_msg)
         return 1
 
+    # Check edge-tts if dubbing is requested
+    if args.dub:
+        tts_ok, tts_msg = check_edge_tts_dependency()
+        if not tts_ok:
+            print(tts_msg)
+            return 1
+
+    # Validate dubbing requires video file
+    if args.dub and args.url:
+        print("Błąd: Dubbing wymaga lokalnego pliku wideo (użyj --local)")
+        return 1
+
     # Create temporary directory for intermediate files
     temp_dir = None
+    original_video_path = None
+    
     try:
         temp_dir = tempfile.mkdtemp(prefix="transcribe_")
         print(f"Katalog tymczasowy: {temp_dir}")
@@ -722,6 +1141,8 @@ def main():
             if not is_valid:
                 print(error_msg)
                 return 1
+
+            original_video_path = args.local
 
             # Extract audio from local video
             success, message, audio_path = extract_audio_from_video(args.local, output_dir=temp_dir)
@@ -877,6 +1298,90 @@ def main():
             return 1
 
         print(message)
+
+        # Stage 6: TTS Dubbing (if requested)
+        if args.dub:
+            print(f"\n=== Etap 6: Generowanie dubbingu TTS ===")
+
+            if not original_video_path:
+                print("Błąd: Dubbing wymaga pliku wideo")
+                return 1
+
+            # Create TTS directory in temp
+            tts_dir = Path(temp_dir) / "tts"
+            tts_dir.mkdir(exist_ok=True)
+
+            # Generate TTS for each segment
+            success, message, tts_files = generate_tts_segments(
+                all_segments,
+                str(tts_dir),
+                voice=args.tts_voice
+            )
+
+            if not success:
+                print(message)
+                return 1
+
+            print(message)
+
+            # Get total duration of original audio
+            success, total_duration_ms = get_audio_duration_ms(audio_path)
+            if not success:
+                print("Błąd: Nie można odczytać długości audio")
+                return 1
+
+            # Combine TTS segments into single track
+            tts_combined_path = Path(temp_dir) / "tts_combined.wav"
+            success, message = create_tts_audio_track(
+                tts_files,
+                total_duration_ms,
+                str(tts_combined_path)
+            )
+
+            if not success:
+                print(message)
+                return 1
+
+            print(message)
+
+            # Mix original audio with TTS
+            mixed_audio_path = Path(temp_dir) / "mixed_audio.wav"
+            success, message = mix_audio_tracks(
+                audio_path,
+                str(tts_combined_path),
+                str(mixed_audio_path),
+                original_volume=args.original_volume,
+                tts_volume=args.tts_volume
+            )
+
+            if not success:
+                print(message)
+                return 1
+
+            print(message)
+
+            # Create final dubbed video
+            if args.dub_output:
+                dubbed_video_filename = args.dub_output
+                if not dubbed_video_filename.endswith('.mp4'):
+                    dubbed_video_filename += '.mp4'
+            else:
+                dubbed_video_filename = f"{input_stem}_dubbed.mp4"
+
+            success, message = create_dubbed_video(
+                original_video_path,
+                str(mixed_audio_path),
+                dubbed_video_filename
+            )
+
+            if not success:
+                print(message)
+                return 1
+
+            print(message)
+            print(f"\n[OK] Dubbing zakończony pomyślnie!")
+            print(f"[OK] Wideo z dubbingiem: {dubbed_video_filename}")
+
         print(f"\n[OK] Transkrypcja zakończona pomyślnie!")
         print(f"[OK] Plik SRT zapisany: {srt_filename}")
         print(f"\nMożesz otworzyć plik SRT w VLC lub innym odtwarzaczu wideo.")
