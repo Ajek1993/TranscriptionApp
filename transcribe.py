@@ -1301,11 +1301,43 @@ def main():
     parser.add_argument('--engine', default='faster-whisper',
                    choices=['faster-whisper', 'whisper'],
                    help='Silnik transkrypcji (domyślnie: faster-whisper)')
-
-
+    parser.add_argument('--download', type=str, metavar='URL',
+                   help='Pobierz tylko wideo z YouTube (bez transkrypcji)')
 
 
     args = parser.parse_args()
+
+    # Handle --download mode (download video only, no transcription)
+    if args.download:
+        if not validate_youtube_url(args.download):
+            print("Błąd: Niepoprawny URL YouTube.")
+            return 1
+        
+        # Check dependencies
+        deps_ok, deps_msg = check_dependencies()
+        if not deps_ok:
+            print(deps_msg)
+            return 1
+        
+        print(f"=== Tryb pobierania wideo ===")
+        print(f"Pobieranie z: {args.download}")
+        print(f"Jakość: {args.video_quality}p")
+        
+        # Download to current directory
+        success, message, video_path = download_video(
+            args.download, 
+            output_dir=".",  # Current directory
+            quality=args.video_quality
+        )
+        
+        if not success:
+            print(message)
+            return 1
+        
+        print(message)
+        print(f"\n✓ Wideo pobrane: {video_path}")
+        return 0
+
 
     # Test merge functionality with hardcoded data
     if args.test_merge:
