@@ -422,12 +422,8 @@ def translate_segments(
         return True, "Brak segmentów do tłumaczenia", []
 
     try:
-        # Map language codes to deep-translator format
-        lang_map = {'pl': 'polish', 'en': 'english'}
-        src = lang_map.get(source_lang, source_lang)
-        tgt = lang_map.get(target_lang, target_lang)
-
-        translator = GoogleTranslator(source_language=src, target_language=tgt)
+        # Użyj bezpośrednio skrótów języków - GoogleTranslator je obsługuje
+        translator = GoogleTranslator(source=source_lang, target=target_lang)
 
         translated_segments = []
 
@@ -443,7 +439,6 @@ def translate_segments(
 
                 # Translate texts
                 try:
-                    # deep-translator doesn't have batch, so translate individually
                     translated_texts = []
                     for text in texts:
                         try:
