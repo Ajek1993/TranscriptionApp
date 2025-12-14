@@ -455,15 +455,22 @@ def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "p
                 model = WhisperModel(model_size, device=device, compute_type="int8")
             else:
                 raise
-
+        print(f"\n=== Etap 1: Transkrypcja ===")
         tqdm.write(f"Transkrypcja: {wav_file.name}...")
 
         # Transcribe
         segments_generator, info = model.transcribe(
             str(wav_path),
             language=language,
-            word_timestamps=False,
-            vad_filter=True
+            word_timestamps=True,
+            vad_filter=True,
+            vad_parameters=dict(
+                threshold=0.5,               # Próg wykrywania mowy (0.0-1.0, niższy = bardziej czuły)
+                min_speech_duration_ms=250,  # Min. długość mowy (było domyślnie 500ms)
+                max_speech_duration_s=15,    # DODAJ: Max. długość jednego segmentu (15 sekund)
+                min_silence_duration_ms=500, # Min. cisza między segmentami (było 2000ms)
+                speech_pad_ms=400            # Padding wokół mowy
+            )
         )
 
         tqdm.write(f"Wykryty język: {info.language} (prawdopodobieństwo: {info.language_probability:.2f})")
@@ -489,6 +496,119 @@ def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "p
         return False, f"Błąd: Brak wymaganej biblioteki: {str(e)}. Zainstaluj: pip install faster-whisper", []
     except Exception as e:
         return False, f"Błąd podczas transkrypcji: {str(e)}", []
+
+def split_long_segments(
+    segments: List[Tuple[int, int, str]],
+    max_duration_ms: int = 10000,
+    max_words: int = 15
+) -> List[Tuple[int, int, str]]:
+    """
+    Split long segments into smaller ones based on duration and word count.
+    
+    Args:
+        segments: List of (start_ms, end_ms, text) tuples
+        max_duration_ms: Maximum segment duration in milliseconds
+        max_words: Maximum words per segment
+    
+    Returns:
+        List of split segments
+    """
+    result = []
+    
+    for start_ms, end_ms, text in segments:
+        duration_ms = end_ms - start_ms
+        words = text.split()
+        
+        # If segment is short enough, keep as is
+        if duration_ms <= max_duration_ms and len(words) <= max_words:
+            result.append((start_ms, end_ms, text))
+            continue
+        
+        # Split long segment by sentences or words
+        import re
+        # Split by sentence-ending punctuation
+        sentences = re.split(r'([.!?]+\s+)', text)
+        
+        if len(sentences) <= 1:
+            # No sentence breaks, split by words
+            words_per_chunk = max(1, max_words)
+            word_chunks = [words[i:i + words_per_chunk] for i in range(0, len(words), words_per_chunk)]
+            
+            time_per_word = duration_ms / len(words)
+            current_time = start_ms
+            
+            for chunk in word_chunks:
+                chunk_text = ' '.join(chunk)
+                chunk_duration = int(len(chunk) * time_per_word)
+                chunk_end = min(current_time + chunk_duration, end_ms)
+                
+                result.append((current_time, chunk_end, chunk_text))
+                current_time = chunk_end
+        else:
+            # Split by sentences
+            current_time = start_ms
+            time_per_char = duration_ms / len(text)
+            
+            for i in range(0, len(sentences), 2):  # Sentences + punctuation pairs
+                if i >= len(sentences):
+                    break
+                    
+                sentence = sentences[i]
+                punct = sentences[i + 1] if i + 1 < len(sentences) else ''
+                full_sentence = sentence + punct
+                
+                if not full_sentence.strip():
+                    continue
+                
+                sentence_duration = int(len(full_sentence) * time_per_char)
+                sentence_end = min(current_time + sentence_duration, end_ms)
+                
+                result.append((current_time, sentence_end, full_sentence.strip()))
+                current_time = sentence_end
+    
+    return result
+
+
+def fill_timestamp_gaps(
+    segments: List[Tuple[int, int, str]],
+    max_gap_to_fill_ms: int = 2000,
+    min_pause_ms: int = 200
+) -> List[Tuple[int, int, str]]:
+    """
+    Fill only small gaps in timestamps by extending segments.
+    Large gaps (silence/music) are preserved.
+    
+    Args:
+        segments: List of (start_ms, end_ms, text) tuples
+        max_gap_to_fill_ms: Maximum gap size to fill (larger gaps preserved)
+        min_pause_ms: Minimum pause to leave between segments
+    
+    Returns:
+        List of segments with small gaps filled
+    """
+    if not segments:
+        return segments
+    
+    result = []
+    
+    for i, (start_ms, end_ms, text) in enumerate(segments):
+        if i < len(segments) - 1:
+            next_start_ms = segments[i + 1][0]
+            gap_ms = next_start_ms - end_ms
+            
+            # Only fill small gaps
+            if 0 < gap_ms <= max_gap_to_fill_ms:
+                new_end_ms = next_start_ms - min_pause_ms
+                result.append((start_ms, new_end_ms, text))
+            else:
+                # Large gap - preserve it
+                result.append((start_ms, end_ms, text))
+        else:
+            result.append((start_ms, end_ms, text))
+    
+    return result
+
+
 
 
 def format_srt_timestamp(ms: int) -> str:
@@ -1135,6 +1255,17 @@ def main():
                        help='Nazwa pliku wyjściowego z dubbingiem (domyślnie: video_id_dubbed.mp4)')
     parser.add_argument('--dub-audio-only', action='store_true',
                        help='Generuj tylko ścieżkę audio z dubbingiem (bez wideo, format WAV)')
+    parser.add_argument('--max-segment-duration', type=int, default=10,
+                   help='Maksymalna długość segmentu w sekundach (domyślnie: 10)')
+    parser.add_argument('--max-segment-words', type=int, default=15,
+                   help='Maksymalna liczba słów w segmencie (domyślnie: 15)')
+    parser.add_argument('--fill-gaps', action='store_true',
+                   help='Wypełnij luki w timestampach dla lepszej synchronizacji dubbingu')
+    parser.add_argument('--min-pause', type=int, default=300,
+                   help='Minimalna pauza między segmentami w ms (domyślnie: 300)')
+    parser.add_argument('--max-gap-fill', type=int, default=2000,
+                   help='Maksymalna luka do wypełnienia w ms (domyślnie: 2000)')
+
 
 
     args = parser.parse_args()
@@ -1351,7 +1482,30 @@ def main():
                 if not success:
                     print(message)
                     return 1
+                
+                # Split long segments for better dubbing sync
+                if args.dub or args.dub_audio_only:
+                    original_count = len(segments)
+                    
+                    segments = split_long_segments(
+                        segments,
+                        max_duration_ms=args.max_segment_duration * 1000,
+                        max_words=args.max_segment_words
+                    )
+                    
+                    if len(segments) != original_count:
+                        tqdm.write(f"Podzielono długie segmenty: {original_count} → {len(segments)} segmentów")
 
+                    # Fill gaps in timestamps if requested
+                    if args.fill_gaps:
+                        segments = fill_timestamp_gaps(
+                            segments, 
+                            max_gap_to_fill_ms=args.max_gap_fill,
+                            min_pause_ms=args.min_pause
+                        )
+                        tqdm.write(f"Wypełniono małe luki w timestampach")
+
+                    
                 # Store offset for this chunk
                 chunk_offsets.append(current_offset_ms)
 
@@ -1371,7 +1525,7 @@ def main():
 
         # Translation step (if requested)
         if args.translate:
-            print(f"\n=== Etap: Tłumaczenie ===")
+            print(f"\n=== Etap 2: Tłumaczenie ===")
 
             # Parse translation direction
             src_lang, tgt_lang = args.translate.split('-')
@@ -1398,7 +1552,7 @@ def main():
             return 0
 
         # Stage 4: Generate SRT file
-        print(f"\n=== Etap 4: Generowanie pliku SRT ===")
+        print(f"\n=== Etap 3: Generowanie pliku SRT ===")
         print(f"Łącznie segmentów: {len(all_segments)}")
 
         # Determine output filename
@@ -1419,7 +1573,7 @@ def main():
 
         # Stage 6: TTS Dubbing (if requested)
         if args.dub or args.dub_audio_only:
-            print(f"\n=== Etap 6: Generowanie dubbingu TTS ===")
+            print(f"\n=== Etap 4: Generowanie dubbingu TTS ===")
 
             # For full dubbing, we need video file
             if args.dub and not original_video_path:
