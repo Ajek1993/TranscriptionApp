@@ -1208,6 +1208,73 @@ def create_dubbed_video(
         return False, "Błąd: Tworzenie wideo przerwane (timeout)"
     except Exception as e:
         return False, f"Błąd przy tworzeniu wideo: {str(e)}"
+    
+def burn_subtitles_to_video(
+    video_path: str,
+    srt_path: str,
+    output_path: str,
+    subtitle_style: str = "FontName=Arial,FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H000000FF,BorderStyle=1,Outline=2,Shadow=1,MarginV=20"
+) -> Tuple[bool, str]:
+    """
+    Burn (hardcode) subtitles into video permanently.
+    
+    Args:
+        video_path: Path to input video file
+        srt_path: Path to SRT subtitle file
+        output_path: Path to save output video with burned subtitles
+        subtitle_style: ASS subtitle style string
+    
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    try:
+        # Validate inputs
+        if not Path(video_path).exists():
+            return False, f"Błąd: Plik wideo nie istnieje: {video_path}"
+        
+        if not Path(srt_path).exists():
+            return False, f"Błąd: Plik SRT nie istnieje: {srt_path}"
+
+        # Convert paths to absolute and escape for ffmpeg
+        video_path_abs = str(Path(video_path).resolve())
+        srt_path_abs = str(Path(srt_path).resolve())
+        
+        # Escape special characters for Windows paths in filter
+        srt_path_filter = srt_path_abs.replace('\\', '/').replace(':', '\\:')
+        
+        print(f"Wgrywanie napisów do wideo...")
+        print(f"Wideo: {video_path}")
+        print(f"Napisy: {srt_path}")
+        
+        # Build subtitles filter with custom style
+        subtitles_filter = f"subtitles='{srt_path_filter}':force_style='{subtitle_style}':charenc=UTF-8"
+        
+        cmd = [
+            'ffmpeg', '-y',
+            '-i', video_path_abs,
+            '-vf', subtitles_filter,
+            '-c:v', 'libx264',           # Re-encode video with H.264
+            '-preset', 'medium',          # Encoding speed (ultrafast, fast, medium, slow)
+            '-crf', '23',                 # Quality (18-28, lower = better)
+            '-c:a', 'copy',               # Copy audio without re-encoding
+            str(output_path)
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        
+        if result.returncode != 0:
+            return False, f"Błąd ffmpeg przy wgrywaniu napisów: {result.stderr}"
+        
+        if not Path(output_path).exists():
+            return False, f"Błąd: Wideo z napisami nie zostało utworzone: {output_path}"
+        
+        return True, f"Napisy wgrane do wideo: {output_path}"
+    
+    except subprocess.TimeoutExpired:
+        return False, "Błąd: Wgrywanie napisów przerwane (timeout)"
+    except Exception as e:
+        return False, f"Błąd przy wgrywaniu napisów: {str(e)}"
+
 
 
 def cleanup_temp_files(temp_dir: str, retries: int = 3, delay: float = 0.2) -> None:
@@ -1303,6 +1370,14 @@ def main():
                    help='Silnik transkrypcji (domyślnie: faster-whisper)')
     parser.add_argument('--download', type=str, metavar='URL',
                    help='Pobierz tylko wideo z YouTube (bez transkrypcji)')
+    parser.add_argument('--burn-subtitles', action='store_true',
+                   help='Wgraj napisy na stałe do wideo (wymaga wideo z YouTube lub lokalnego)')
+    parser.add_argument('--subtitle-style', type=str,
+                    default='FontName=Arial,FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H000000FF,BorderStyle=1,Outline=2,Shadow=1,MarginV=20',
+                    help='Styl napisów ASS (domyślnie: biały tekst, czarna obwódka)')
+    parser.add_argument('--burn-output', type=str,
+                   help='Nazwa pliku wyjściowego z napisami (domyślnie: {video_id}_subtitled.mp4)')
+
 
 
     args = parser.parse_args()
@@ -1640,6 +1715,52 @@ def main():
             return 1
 
         print(message)
+
+                # Stage 5: Burn subtitles to video if requested
+        if args.burn_subtitles:
+            print(f"\n=== Etap 5: Wgrywanie napisów do wideo ===")
+            
+            # Need video file
+            if not original_video_path:
+                # Try to download video if we have URL
+                if args.url:
+                    print("Pobieranie wideo dla napisów...")
+                    success, message, video_path = download_video(
+                        args.url, 
+                        output_dir=temp_dir, 
+                        quality=args.video_quality
+                    )
+                    if not success:
+                        print(message)
+                        return 1
+                    original_video_path = video_path
+                    should_cleanup_video = True
+                else:
+                    print("Błąd: --burn-subtitles wymaga wideo (YouTube URL lub --local)")
+                    return 1
+            
+            # Determine output filename
+            if args.burn_output:
+                burn_output_filename = args.burn_output
+                if not burn_output_filename.endswith('.mp4'):
+                    burn_output_filename += '.mp4'
+            else:
+                burn_output_filename = f"{input_stem}_subtitled.mp4"
+            
+            # Burn subtitles
+            success, message = burn_subtitles_to_video(
+                original_video_path,
+                srt_filename,
+                burn_output_filename,
+                subtitle_style=args.subtitle_style
+            )
+            
+            if not success:
+                print(message)
+                return 1
+            
+            print(message)
+            print(f"\n✓ Wideo z napisami: {burn_output_filename}")
 
         # Stage 6: TTS Dubbing (if requested)
         if args.dub or args.dub_audio_only:
