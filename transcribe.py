@@ -1116,7 +1116,16 @@ def main():
                        choices=['720', '1080', '1440', '2160'],
                        help='Jakość wideo przy pobieraniu z YouTube (domyślnie: 1080)')
     parser.add_argument('--tts-voice', type=str, default='pl-PL-MarekNeural',
-                       choices=['pl-PL-MarekNeural', 'pl-PL-ZofiaNeural'],
+                       choices=[
+                       'pl-PL-MarekNeural',    # Polski (PL) męski
+                       'pl-PL-ZofiaNeural',    # Polski (PL) żeński
+                       'en-US-GuyNeural',      # Angielski (US) męski
+                       'en-US-JennyNeural',    # Angielski (US) żeński
+                       'en-GB-RyanNeural',     # Angielski (UK) męski
+                       'en-GB-SoniaNeural',    # Angielski (UK) żeński
+                       'en-AU-WilliamNeural',  # Angielski (AU) męski
+                       'en-AU-NatashaNeural',  # Angielski (AU) żeński
+                       ],
                        help='Głos TTS (domyślnie: pl-PL-MarekNeural)')
     parser.add_argument('--tts-volume', type=float, default=1.0,
                        help='Głośność TTS 0.0-2.0 (domyślnie: 1.0)')
@@ -1124,6 +1133,9 @@ def main():
                        help='Głośność oryginalnego audio 0.0-1.0 (domyślnie: 0.2)')
     parser.add_argument('--dub-output', type=str,
                        help='Nazwa pliku wyjściowego z dubbingiem (domyślnie: video_id_dubbed.mp4)')
+    parser.add_argument('--dub-audio-only', action='store_true',
+                       help='Generuj tylko ścieżkę audio z dubbingiem (bez wideo, format WAV)')
+
 
     args = parser.parse_args()
 
@@ -1195,7 +1207,7 @@ def main():
         return 1
 
     # Check edge-tts if dubbing is requested
-    if args.dub:
+    if args.dub or args.dub_audio_only:
         tts_ok, tts_msg = check_edge_tts_dependency()
         if not tts_ok:
             print(tts_msg)
@@ -1241,7 +1253,7 @@ def main():
             input_stem = video_id_match.group(1) if video_id_match else "output"
 
             # If dubbing is requested, download full video
-            if args.dub:
+            if args.dub and not args.dub_audio_only:
                 print(f"\n=== Dubbing włączony: Pobieranie pełnego wideo ===")
                 success, message, video_path = download_video(args.url, output_dir=temp_dir, quality=args.video_quality)
                 if not success:
@@ -1254,6 +1266,15 @@ def main():
 
                 # Extract audio from downloaded video
                 success, message, audio_path = extract_audio_from_video(video_path, output_dir=temp_dir)
+                if not success:
+                    print(message)
+                    return 1
+
+                print(message)
+            elif args.dub_audio_only:
+                # Audio-only dubbing mode - just download audio
+                print(f"\n=== Dubbing audio-only włączony: Pobieranie audio ===")
+                success, message, audio_path = download_audio(args.url, output_dir=temp_dir)
                 if not success:
                     print(message)
                     return 1
@@ -1397,10 +1418,11 @@ def main():
         print(message)
 
         # Stage 6: TTS Dubbing (if requested)
-        if args.dub:
+        if args.dub or args.dub_audio_only:
             print(f"\n=== Etap 6: Generowanie dubbingu TTS ===")
 
-            if not original_video_path:
+            # For full dubbing, we need video file
+            if args.dub and not original_video_path:
                 print("Błąd: Dubbing wymaga pliku wideo")
                 return 1
 
@@ -1457,27 +1479,43 @@ def main():
 
             print(message)
 
-            # Create final dubbed video
-            if args.dub_output:
-                dubbed_video_filename = args.dub_output
-                if not dubbed_video_filename.endswith('.mp4'):
-                    dubbed_video_filename += '.mp4'
+            # Audio-only mode: just save the mixed audio
+            if args.dub_audio_only:
+                if args.dub_output:
+                    dubbed_audio_filename = args.dub_output
+                    if not dubbed_audio_filename.endswith('.wav'):
+                        dubbed_audio_filename += '.wav'
+                else:
+                    dubbed_audio_filename = f"{input_stem}_dubbed.wav"
+
+                # Copy mixed audio to output
+                shutil.copy2(str(mixed_audio_path), dubbed_audio_filename)
+                
+                print(f"\n[OK] Dubbing audio zakończony pomyślnie!")
+                print(f"[OK] Audio z dubbingiem: {dubbed_audio_filename}")
             else:
-                dubbed_video_filename = f"{input_stem}_dubbed.mp4"
+                # Full video dubbing mode
+                if args.dub_output:
+                    dubbed_video_filename = args.dub_output
+                    if not dubbed_video_filename.endswith('.mp4'):
+                        dubbed_video_filename += '.mp4'
+                else:
+                    dubbed_video_filename = f"{input_stem}_dubbed.mp4"
 
-            success, message = create_dubbed_video(
-                original_video_path,
-                str(mixed_audio_path),
-                dubbed_video_filename
-            )
+                success, message = create_dubbed_video(
+                    original_video_path,
+                    str(mixed_audio_path),
+                    dubbed_video_filename
+                )
 
-            if not success:
+                if not success:
+                    print(message)
+                    return 1
+
                 print(message)
-                return 1
+                print(f"\n[OK] Dubbing zakończony pomyślnie!")
+                print(f"[OK] Wideo z dubbingiem: {dubbed_video_filename}")
 
-            print(message)
-            print(f"\n[OK] Dubbing zakończony pomyślnie!")
-            print(f"[OK] Wideo z dubbingiem: {dubbed_video_filename}")
 
         print(f"\n[OK] Transkrypcja zakończona pomyślnie!")
         print(f"[OK] Plik SRT zapisany: {srt_filename}")

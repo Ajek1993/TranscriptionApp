@@ -114,18 +114,28 @@ python transcribe.py "URL" --dub \
 --video-quality 1080   # Full HD (domyślnie)
 --video-quality 1440   # 2K
 --video-quality 2160   # 4K
+
+# Tylko audio z dubbingiem (bez wideo, szybsze)
+python transcribe.py "URL" --dub-audio-only
+
+# Lokalny plik - tylko audio z dubbingiem
+python transcribe.py --local "video.mp4" --dub-audio-only
+
+# YouTube audio z dubbingiem i własną nazwą
+python transcribe.py "URL" --dub-audio-only --dub-output moj_dubbing.wav
 ```
 
 #### Parametry dubbingu
 
-| Parametr            | Opis                                        | Domyślna wartość      |
-| ------------------- | ------------------------------------------- | --------------------- |
-| `--dub`             | Włącz generowanie dubbingu                  | Wyłączone             |
-| `--video-quality`   | Jakość wideo z YouTube (720/1080/1440/2160) | 1080                  |
-| `--tts-voice`       | Wybór głosu (MarekNeural lub ZofiaNeural)   | pl-PL-MarekNeural     |
-| `--tts-volume`      | Głośność TTS (0.0-2.0)                      | 1.0                   |
-| `--original-volume` | Głośność oryginalnego audio (0.0-1.0)       | 0.2 (ściszone do 20%) |
-| `--dub-output`      | Nazwa pliku wyjściowego z dubbingiem        | video_dubbed.mp4      |
+| Parametr            | Opis                                              | Domyślna wartość      |
+| ------------------- | ------------------------------------------------- | --------------------- |
+| `--dub`             | Włącz generowanie dubbingu                        | Wyłączone             |
+| `--dub-audio-only`  | Generuj tylko audio z dubbingiem (WAV, bez wideo) | Wyłączone             |
+| `--video-quality`   | Jakość wideo z YouTube (720/1080/1440/2160)       | 1080                  |
+| `--tts-voice`       | Wybór głosu (MarekNeural lub ZofiaNeural)         | pl-PL-MarekNeural     |
+| `--tts-volume`      | Głośność TTS (0.0-2.0)                            | 1.0                   |
+| `--original-volume` | Głośność oryginalnego audio (0.0-1.0)             | 0.2 (ściszone do 20%) |
+| `--dub-output`      | Nazwa pliku wyjściowego z dubbingiem              | video_dubbed.mp4      |
 
 **Uwaga**: Przy dubbingu z YouTube wideo jest pobierane do katalogu tymczasowego i automatycznie usuwane po zakończeniu.
 
@@ -321,10 +331,19 @@ Tłumaczenie odbywa się za pośrednictwem Google Translate (deep-translator lib
 
 ### Głosy TTS
 
-Dostępne polskie głosy Microsoft Edge TTS:
+**Dostępne polskie głosy Microsoft Edge TTS:**
 
 - **pl-PL-MarekNeural**: Męski głos (domyślny)
 - **pl-PL-ZofiaNeural**: Żeński głos
+
+**Dostępne angielskie głosy:**
+
+- `en-US-GuyNeural` - Męski głos (USA)
+- `en-US-JennyNeural` - Żeński głos (USA)
+- `en-GB-RyanNeural` - Męski głos (Wielka Brytania)
+- `en-GB-SoniaNeural` - Żeński głos (Wielka Brytania)
+- `en-AU-WilliamNeural` - Męski głos (Australia)
+- `en-AU-NatashaNeural` - Żeński głos (Australia)
 
 ## Rozwiązywanie problemów
 
