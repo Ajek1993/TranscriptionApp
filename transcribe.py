@@ -1330,8 +1330,8 @@ def main():
     transcription_group = parser.add_argument_group('Opcje transkrypcji', 'Konfiguracja modelu i języka transkrypcji')
     transcription_group.add_argument('--model', default='base', choices=['tiny', 'base', 'small', 'medium', 'large'],
                        help='Rozmiar modelu Whisper (domyślnie: base)')
-    transcription_group.add_argument('--language', type=str, default='pl',
-                       help='Język transkrypcji (domyślnie: pl)')
+    transcription_group.add_argument('--language', type=str, default=None,
+                       help='Język transkrypcji (domyślnie: auto-detekcja)')
     transcription_group.add_argument('--engine', default='faster-whisper',
                    choices=['faster-whisper', 'whisper'],
                    help='Silnik transkrypcji (domyślnie: faster-whisper)')
@@ -1715,10 +1715,16 @@ def main():
 
         # Determine output filename
         if args.output:
+            # User explicitly specified output - always honor it
             srt_filename = args.output
             if not srt_filename.endswith('.srt'):
                 srt_filename += '.srt'
+        elif args.burn_subtitles:
+            # Burning subtitles without explicit output - use temp directory
+            # File will be cleaned up after burning
+            srt_filename = str(Path(temp_dir) / f"{input_stem}.srt")
         else:
+            # Normal case: write to current directory
             srt_filename = f"{input_stem}.srt"
 
         # Write SRT file to current directory
@@ -1876,8 +1882,8 @@ def main():
 
 
         print(f"\n[OK] Transkrypcja zakończona pomyślnie!")
-        print(f"[OK] Plik SRT zapisany: {srt_filename}")
-        print(f"\nMożesz otworzyć plik SRT w VLC lub innym odtwarzaczu wideo.")
+        # print(f"[OK] Plik SRT zapisany: {srt_filename}")
+        # print(f"\nMożesz otworzyć plik SRT w VLC lub innym odtwarzaczu wideo.")
 
         return 0
 
