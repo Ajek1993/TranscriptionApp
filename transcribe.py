@@ -1213,7 +1213,7 @@ def burn_subtitles_to_video(
     video_path: str,
     srt_path: str,
     output_path: str,
-    subtitle_style: str = "FontName=Arial,FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H000000FF,BorderStyle=1,Outline=2,Shadow=1,MarginV=20"
+    subtitle_style: str = "FontName=Arial,FontSize=24,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,BorderStyle=4,Outline=0,Shadow=0,MarginV=20"
 ) -> Tuple[bool, str]:
     """
     Burn (hardcode) subtitles into video permanently.
@@ -1311,31 +1311,39 @@ def main():
     parser = argparse.ArgumentParser(
         description='Transkrypcja z YouTube lub lokalnych plików wideo na SRT'
     )
-    parser.add_argument('url', nargs='?', help='URL YouTube do transkrypcji')
-    parser.add_argument('-l', '--local', type=str,
+
+    # ===== OPCJE PODSTAWOWE =====
+    basic_group = parser.add_argument_group('Opcje podstawowe', 'Podstawowa konfiguracja wejścia/wyjścia')
+    basic_group.add_argument('url', nargs='?', help='URL YouTube do transkrypcji')
+    basic_group.add_argument('-l', '--local', type=str,
                        help='Ścieżka do lokalnego pliku wideo (MP4, MKV, AVI, MOV)')
-    parser.add_argument('--only-download', action='store_true',
-                       help='Tylko pobierz audio, nie transkrybuj (developerski)')
-    parser.add_argument('--only-chunk', action='store_true',
-                       help='Tylko podziel audio, nie transkrybuj (developerski)')
-    parser.add_argument('--only-transcribe', action='store_true',
-                       help='Tylko transkrybuj chunki, nie generuj SRT (developerski)')
-    parser.add_argument('--test-merge', action='store_true',
-                       help='Test generowania SRT z hardcoded danymi (developerski)')
-    parser.add_argument('--model', default='base', choices=['tiny', 'base', 'small', 'medium', 'large'],
-                       help='Rozmiar modelu Whisper (domyślnie: base)')
-    parser.add_argument('--language', type=str, default='pl',
-                       help='Język transkrypcji (domyślnie: pl)')
-    parser.add_argument('-t', '--translate', type=str, choices=['pl-en', 'en-pl'],
-                       help='Tłumaczenie (pl-en: polski->angielski, en-pl: angielski->polski)')
-    parser.add_argument('-o', '--output', type=str,
+    basic_group.add_argument('-o', '--output', type=str,
                        help='Nazwa pliku wyjściowego SRT (domyślnie: video_id.srt lub nazwa_pliku.srt)')
-    parser.add_argument('--dub', action='store_true',
-                       help='Generuj dubbing TTS (wymaga lokalnego pliku lub pobiera z YouTube)')
-    parser.add_argument('--video-quality', type=str, default='1080',
+    basic_group.add_argument('--download', type=str, metavar='URL',
+                   help='Pobierz tylko wideo z YouTube (bez transkrypcji)')
+    basic_group.add_argument('--video-quality', type=str, default='1080',
                        choices=['720', '1080', '1440', '2160'],
                        help='Jakość wideo przy pobieraniu z YouTube (domyślnie: 1080)')
-    parser.add_argument('--tts-voice', type=str, default='pl-PL-MarekNeural',
+
+    # ===== OPCJE TRANSKRYPCJI =====
+    transcription_group = parser.add_argument_group('Opcje transkrypcji', 'Konfiguracja modelu i języka transkrypcji')
+    transcription_group.add_argument('--model', default='base', choices=['tiny', 'base', 'small', 'medium', 'large'],
+                       help='Rozmiar modelu Whisper (domyślnie: base)')
+    transcription_group.add_argument('--language', type=str, default='pl',
+                       help='Język transkrypcji (domyślnie: pl)')
+    transcription_group.add_argument('--engine', default='faster-whisper',
+                   choices=['faster-whisper', 'whisper'],
+                   help='Silnik transkrypcji (domyślnie: faster-whisper)')
+    transcription_group.add_argument('-t', '--translate', type=str, choices=['pl-en', 'en-pl'],
+                       help='Tłumaczenie (pl-en: polski->angielski, en-pl: angielski->polski)')
+
+    # ===== OPCJE DUBBINGU I NAPISÓW =====
+    dubbing_group = parser.add_argument_group('Opcje dubbingu i napisów', 'Konfiguracja TTS i wgrywania napisów do wideo')
+    dubbing_group.add_argument('--dub', action='store_true',
+                       help='Generuj dubbing TTS (wymaga lokalnego pliku lub pobiera z YouTube)')
+    dubbing_group.add_argument('--dub-audio-only', action='store_true',
+                       help='Generuj tylko ścieżkę audio z dubbingiem (bez wideo, format WAV)')
+    dubbing_group.add_argument('--tts-voice', type=str, default='pl-PL-MarekNeural',
                        choices=[
                        'pl-PL-MarekNeural',    # Polski (PL) męski
                        'pl-PL-ZofiaNeural',    # Polski (PL) żeński
@@ -1347,36 +1355,40 @@ def main():
                        'en-AU-NatashaNeural',  # Angielski (AU) żeński
                        ],
                        help='Głos TTS (domyślnie: pl-PL-MarekNeural)')
-    parser.add_argument('--tts-volume', type=float, default=1.0,
+    dubbing_group.add_argument('--tts-volume', type=float, default=1.0,
                        help='Głośność TTS 0.0-2.0 (domyślnie: 1.0)')
-    parser.add_argument('--original-volume', type=float, default=0.2,
+    dubbing_group.add_argument('--original-volume', type=float, default=0.2,
                        help='Głośność oryginalnego audio 0.0-1.0 (domyślnie: 0.2)')
-    parser.add_argument('--dub-output', type=str,
+    dubbing_group.add_argument('--dub-output', type=str,
                        help='Nazwa pliku wyjściowego z dubbingiem (domyślnie: video_id_dubbed.mp4)')
-    parser.add_argument('--dub-audio-only', action='store_true',
-                       help='Generuj tylko ścieżkę audio z dubbingiem (bez wideo, format WAV)')
-    parser.add_argument('--max-segment-duration', type=int, default=10,
-                   help='Maksymalna długość segmentu w sekundach (domyślnie: 10)')
-    parser.add_argument('--max-segment-words', type=int, default=15,
-                   help='Maksymalna liczba słów w segmencie (domyślnie: 15)')
-    parser.add_argument('--fill-gaps', action='store_true',
-                   help='Wypełnij luki w timestampach dla lepszej synchronizacji dubbingu')
-    parser.add_argument('--min-pause', type=int, default=300,
-                   help='Minimalna pauza między segmentami w ms (domyślnie: 300)')
-    parser.add_argument('--max-gap-fill', type=int, default=2000,
-                   help='Maksymalna luka do wypełnienia w ms (domyślnie: 2000)')
-    parser.add_argument('--engine', default='faster-whisper',
-                   choices=['faster-whisper', 'whisper'],
-                   help='Silnik transkrypcji (domyślnie: faster-whisper)')
-    parser.add_argument('--download', type=str, metavar='URL',
-                   help='Pobierz tylko wideo z YouTube (bez transkrypcji)')
-    parser.add_argument('--burn-subtitles', action='store_true',
+    dubbing_group.add_argument('--burn-subtitles', action='store_true',
                    help='Wgraj napisy na stałe do wideo (wymaga wideo z YouTube lub lokalnego)')
-    parser.add_argument('--subtitle-style', type=str,
-                    default='FontName=Arial,FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H000000FF,BorderStyle=1,Outline=2,Shadow=1,MarginV=20',
-                    help='Styl napisów ASS (domyślnie: biały tekst, czarna obwódka)')
-    parser.add_argument('--burn-output', type=str,
+    dubbing_group.add_argument('--subtitle-style', type=str,
+                    default='FontName=Arial,FontSize=24,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,BorderStyle=4,Outline=0,Shadow=0,MarginV=20',
+                    help='Styl napisów ASS (domyślnie: biały tekst, półprzezroczyste ciemne tło)')
+    dubbing_group.add_argument('--burn-output', type=str,
                    help='Nazwa pliku wyjściowego z napisami (domyślnie: {video_id}_subtitled.mp4)')
+
+    # ===== OPCJE ZAAWANSOWANE =====
+    advanced_group = parser.add_argument_group('Opcje zaawansowane', 'Zaawansowana konfiguracja i opcje developerskie')
+    advanced_group.add_argument('--max-segment-duration', type=int, default=10,
+                   help='Maksymalna długość segmentu w sekundach (domyślnie: 10)')
+    advanced_group.add_argument('--max-segment-words', type=int, default=15,
+                   help='Maksymalna liczba słów w segmencie (domyślnie: 15)')
+    advanced_group.add_argument('--fill-gaps', action='store_true',
+                   help='Wypełnij luki w timestampach dla lepszej synchronizacji dubbingu')
+    advanced_group.add_argument('--min-pause', type=int, default=300,
+                   help='Minimalna pauza między segmentami w ms (domyślnie: 300)')
+    advanced_group.add_argument('--max-gap-fill', type=int, default=2000,
+                   help='Maksymalna luka do wypełnienia w ms (domyślnie: 2000)')
+    advanced_group.add_argument('--only-download', action='store_true',
+                       help='Tylko pobierz audio, nie transkrybuj (developerski)')
+    advanced_group.add_argument('--only-chunk', action='store_true',
+                       help='Tylko podziel audio, nie transkrybuj (developerski)')
+    advanced_group.add_argument('--only-transcribe', action='store_true',
+                       help='Tylko transkrybuj chunki, nie generuj SRT (developerski)')
+    advanced_group.add_argument('--test-merge', action='store_true',
+                       help='Test generowania SRT z hardcoded danymi (developerski)')
 
 
 
