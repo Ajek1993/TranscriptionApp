@@ -3,3 +3,12 @@ faster-whisper>=0.10.0
 tqdm>=4.66.0
 deep-translator>=1.11.0
 edge-tts>=7.0.0
+
+# GPU Support (instaluj ręcznie dla akceleracji CUDA 12.1):
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 --no-cache-dir
+
+# Opcjonalnie - silnik OpenAI Whisper:
+# openai-whisper>=20231117
+
+# UWAGA: CTranslate2 4.6.2+ wymaga CUDA 12.x (NIE 11.8)!
+# Szczegółowa instrukcja konfiguracji GPU: CUDA_CONFIG.md

@@ -502,7 +502,8 @@ def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "p
             
             tqdm.write(f"\n=== Etap 1: Transkrypcja: {wav_file.name}... ===")
             
-            result = model.transcribe(str(wav_path), language=language, word_timestamps=True, verbose=False, fp16=False)
+            device, _ = detect_device()
+            result = model.transcribe(str(wav_path), language=language, word_timestamps=True, verbose=False, fp16=(device == "cuda"))
 
             # Parsowanie słownika result["segments"]
             for segment in result["segments"]:
