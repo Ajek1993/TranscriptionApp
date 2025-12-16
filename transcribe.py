@@ -40,6 +40,779 @@ except ImportError:
     EDGE_TTS_AVAILABLE = False
 
 
+# ===== OUTPUT MANAGEMENT =====
+
+class OutputManager:
+    """Centralized output management for user-facing messages."""
+
+    @staticmethod
+    def stage_header(stage_num: int, stage_name: str) -> None:
+        """Print stage header: === Etap X: NAME ==="""
+        print(f"\n=== Etap {stage_num}: {stage_name} ===")
+
+    @staticmethod
+    def info(message: str, use_tqdm_safe: bool = False) -> None:
+        """Print info message (use tqdm.write if progress bars active)."""
+        if use_tqdm_safe:
+            tqdm.write(message)
+        else:
+            print(message)
+
+    @staticmethod
+    def success(message: str) -> None:
+        """Print success message with checkmark."""
+        print(f"\n[OK] {message}")
+
+    @staticmethod
+    def warning(message: str, use_tqdm_safe: bool = False) -> None:
+        """Print warning message."""
+        msg = f"Ostrzeżenie: {message}"
+        if use_tqdm_safe:
+            tqdm.write(msg)
+        else:
+            print(msg)
+
+    @staticmethod
+    def error(message: str) -> None:
+        """Print error message."""
+        print(f"Błąd: {message}")
+
+    @staticmethod
+    def detail(message: str, use_tqdm_safe: bool = False) -> None:
+        """Print detailed info (indented, secondary importance)."""
+        msg = f"  {message}"
+        if use_tqdm_safe:
+            tqdm.write(msg)
+        else:
+            print(msg)
+
+    @staticmethod
+    def mode_header(mode_name: str, details: dict = None) -> None:
+        """Print mode header with configuration details."""
+        print(f"\n=== {mode_name} ===")
+        if details:
+            for key, value in details.items():
+                print(f"{key}: {value}")
+
+
+# ===== COMMAND BUILDERS =====
+
+def build_ffprobe_audio_info_cmd(file_path: str) -> list:
+    """Build ffprobe command to get audio info (channels, sample_rate)."""
+    return [
+        'ffprobe', '-v', 'error', '-show_entries',
+        'stream=channels,sample_rate',
+        '-of', 'default=noprint_wrappers=1:nokey=1:noescapes=1',
+        str(file_path)
+    ]
+
+
+def build_ffprobe_video_info_cmd(file_path: str) -> list:
+    """Build ffprobe command to get video info (width, height, codec)."""
+    return [
+        'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+        '-show_entries', 'stream=width,height,codec_name',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        str(file_path)
+    ]
+
+
+def build_ffprobe_duration_cmd(file_path: str) -> list:
+    """Build ffprobe command to get file duration."""
+    return [
+        'ffprobe', '-v', 'error',
+        '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        str(file_path)
+    ]
+
+
+def build_ffmpeg_audio_extraction_cmd(
+    input_path: str,
+    output_path: str,
+    sample_rate: int = 16000,
+    channels: int = 1
+) -> list:
+    """Build ffmpeg command to extract audio as WAV."""
+    return [
+        'ffmpeg',
+        '-i', str(input_path),
+        '-vn',  # No video
+        '-acodec', 'pcm_s16le',  # PCM 16-bit
+        '-ar', str(sample_rate),  # Sample rate
+        '-ac', str(channels),  # Channels
+        '-y',  # Overwrite output
+        str(output_path)
+    ]
+
+
+def build_ffmpeg_audio_split_cmd(
+    input_path: str,
+    output_path: str,
+    start_time: int,
+    duration: int
+) -> list:
+    """Build ffmpeg command to split audio into chunks."""
+    return [
+        'ffmpeg',
+        '-i', str(input_path),
+        '-ss', str(start_time),
+        '-t', str(duration),
+        '-acodec', 'pcm_s16le',
+        '-ar', '16000',
+        '-ac', '1',
+        '-y',
+        str(output_path)
+    ]
+
+
+def build_ffmpeg_video_merge_cmd(
+    video_path: str,
+    audio_path: str,
+    output_path: str
+) -> list:
+    """Build ffmpeg command to merge video with audio track."""
+    return [
+        'ffmpeg', '-y',
+        '-i', str(video_path),
+        '-i', str(audio_path),
+        '-map', '0:v:0',
+        '-map', '1:a:0',
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-shortest',
+        str(output_path)
+    ]
+
+
+def build_ffmpeg_subtitle_burn_cmd(
+    video_path: str,
+    srt_path: str,
+    output_path: str,
+    subtitle_style: str
+) -> list:
+    """Build ffmpeg command to burn subtitles into video."""
+    # Convert paths to absolute and escape for ffmpeg
+    srt_path_abs = str(Path(srt_path).resolve())
+    srt_path_filter = srt_path_abs.replace('\\', '/').replace(':', '\\:')
+
+    # Build subtitles filter with custom style
+    subtitles_filter = f"subtitles='{srt_path_filter}':force_style='{subtitle_style}':charenc=UTF-8"
+
+    return [
+        'ffmpeg', '-y',
+        '-i', str(Path(video_path).resolve()),
+        '-vf', subtitles_filter,
+        '-c:v', 'libx264',
+        '-preset', 'medium',
+        '-crf', '23',
+        '-c:a', 'copy',
+        str(output_path)
+    ]
+
+
+def build_ytdlp_audio_download_cmd(url: str, output_file: str) -> list:
+    """Build yt-dlp command to download audio only."""
+    return [
+        'yt-dlp',
+        '-f', 'bestaudio/best',
+        '-x',
+        '--audio-format', 'wav',
+        '--audio-quality', '0',
+        '-o', str(output_file),
+        url
+    ]
+
+
+def build_ytdlp_video_download_cmd(url: str, output_file: str, quality: str = "1080") -> list:
+    """Build yt-dlp command to download video."""
+    format_str = f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best"
+
+    return [
+        'yt-dlp',
+        '-f', format_str,
+        '--merge-output-format', 'mp4',
+        '-o', str(output_file),
+        url
+    ]
+
+
+# ===== DUBBING PIPELINE =====
+
+def run_dubbing_pipeline(
+    segments: List[Tuple[int, int, str]],
+    audio_path: str,
+    original_video_path: str,
+    input_stem: str,
+    args,
+    temp_dir: str
+) -> Tuple[bool, str]:
+    """
+    Run complete TTS dubbing pipeline.
+
+    Handles:
+    - TTS generation for all segments
+    - TTS track combination
+    - Audio mixing
+    - Video creation (if not audio-only)
+
+    Returns:
+        Tuple of (success, error_msg)
+    """
+    OutputManager.stage_header(4, "Generowanie dubbingu TTS")
+
+    # For full dubbing, we need video file
+    if args.dub and not original_video_path:
+        return False, "Błąd: Dubbing wymaga pliku wideo"
+
+    # Create TTS directory in temp
+    tts_dir = Path(temp_dir) / "tts"
+    tts_dir.mkdir(exist_ok=True)
+
+    # Generate TTS for each segment
+    success, message, tts_files = generate_tts_segments(
+        segments,
+        str(tts_dir),
+        voice=args.tts_voice
+    )
+
+    if not success:
+        return False, message
+
+    print(message)
+
+    # Get total duration of original audio
+    success, total_duration_ms = get_audio_duration_ms(audio_path)
+    if not success:
+        return False, "Błąd: Nie można odczytać długości audio"
+
+    # Combine TTS segments into single track
+    tts_combined_path = Path(temp_dir) / "tts_combined.wav"
+    success, message = create_tts_audio_track(
+        tts_files,
+        total_duration_ms,
+        str(tts_combined_path)
+    )
+
+    if not success:
+        return False, message
+
+    print(message)
+
+    # Mix original audio with TTS
+    mixed_audio_path = Path(temp_dir) / "mixed_audio.wav"
+    success, message = mix_audio_tracks(
+        audio_path,
+        str(tts_combined_path),
+        str(mixed_audio_path),
+        original_volume=args.original_volume,
+        tts_volume=args.tts_volume
+    )
+
+    if not success:
+        return False, message
+
+    print(message)
+
+    # Audio-only mode: just save the mixed audio
+    if args.dub_audio_only:
+        if args.dub_output:
+            dubbed_audio_filename = args.dub_output
+            if not dubbed_audio_filename.endswith('.wav'):
+                dubbed_audio_filename += '.wav'
+        else:
+            dubbed_audio_filename = f"{input_stem}_dubbed.wav"
+
+        # Copy mixed audio to output
+        shutil.copy2(str(mixed_audio_path), dubbed_audio_filename)
+
+        OutputManager.success("Dubbing audio zakończony pomyślnie!")
+        OutputManager.success(f"Audio z dubbingiem: {dubbed_audio_filename}")
+    else:
+        # Full video dubbing mode
+        if args.dub_output:
+            dubbed_video_filename = args.dub_output
+            if not dubbed_video_filename.endswith('.mp4'):
+                dubbed_video_filename += '.mp4'
+        else:
+            dubbed_video_filename = f"{input_stem}_dubbed.mp4"
+
+        success, message = create_dubbed_video(
+            original_video_path,
+            str(mixed_audio_path),
+            dubbed_video_filename
+        )
+
+        if not success:
+            return False, message
+
+        OutputManager.info(message)
+        OutputManager.success("Dubbing zakończony pomyślnie!")
+        OutputManager.success(f"Wideo z dubbingiem: {dubbed_video_filename}")
+
+    return True, ""
+
+
+# ===== SRT GENERATION =====
+
+def generate_srt_output(segments: List[Tuple[int, int, str]], input_stem: str, args, temp_dir: str) -> Tuple[bool, str, str]:
+    """
+    Generate SRT file from segments.
+
+    Returns:
+        Tuple of (success, error_msg, srt_filename)
+    """
+    OutputManager.stage_header(3, "Generowanie pliku SRT")
+    print(f"Łącznie segmentów: {len(segments)}")
+
+    # Determine output filename
+    if args.output:
+        # User explicitly specified output - always honor it
+        srt_filename = args.output
+        if not srt_filename.endswith('.srt'):
+            srt_filename += '.srt'
+    elif args.burn_subtitles:
+        # Burning subtitles without explicit output - use temp directory
+        srt_filename = str(Path(temp_dir) / f"{input_stem}.srt")
+    else:
+        # Normal case: write to current directory
+        srt_filename = f"{input_stem}.srt"
+
+    # Write SRT file
+    success, message = write_srt(segments, srt_filename)
+    if not success:
+        return False, message, ""
+
+    print(message)
+    return True, "", srt_filename
+
+
+# ===== SUBTITLE BURNING PIPELINE =====
+
+def burn_subtitles_to_video_pipeline(original_video_path: str, srt_filename: str, input_stem: str, args, temp_dir: str) -> Tuple[bool, str]:
+    """
+    Handle complete subtitle burning pipeline.
+
+    Returns:
+        Tuple of (success, error_msg)
+    """
+    OutputManager.stage_header(5, "Wgrywanie napisów do wideo")
+
+    # Need video file
+    if not original_video_path:
+        # Try to download video if we have URL
+        if args.url:
+            print("Pobieranie wideo dla napisów...")
+            success, message, video_path = download_video(
+                args.url,
+                output_dir=temp_dir,
+                quality=args.video_quality
+            )
+            if not success:
+                return False, message
+
+            original_video_path = video_path
+        else:
+            return False, "Błąd: --burn-subtitles wymaga wideo (YouTube URL lub --local)"
+
+    # Determine output filename
+    if args.burn_output:
+        burn_output_filename = args.burn_output
+        if not burn_output_filename.endswith('.mp4'):
+            burn_output_filename += '.mp4'
+    else:
+        burn_output_filename = f"{input_stem}_subtitled.mp4"
+
+    # Burn subtitles
+    success, message = burn_subtitles_to_video(
+        original_video_path,
+        srt_filename,
+        burn_output_filename,
+        subtitle_style=args.subtitle_style
+    )
+
+    if not success:
+        return False, message
+
+    print(message)
+    OutputManager.success(f"Wideo z napisami: {burn_output_filename}")
+    return True, ""
+
+
+# ===== TRANSCRIPTION PIPELINE =====
+
+def _transcribe_all_chunks(chunk_paths: List[str], args) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
+    """
+    Transcribe all chunks with progress tracking.
+
+    Returns:
+        Tuple of (success, error_msg, all_segments)
+    """
+    all_segments = []
+    current_offset_ms = 0
+
+    # Create overall progress bar for chunks
+    with tqdm(total=len(chunk_paths), desc="Overall Progress", unit="chunk", position=0) as chunk_pbar:
+        for idx, chunk_path in enumerate(chunk_paths, 1):
+            chunk_file_name = Path(chunk_path).name
+
+            # Update chunk progress bar description
+            chunk_pbar.set_description(f"Chunk {idx}/{len(chunk_paths)}")
+
+            # Create segment progress bar for this chunk (indeterminate - no total)
+            segment_pbar = tqdm(
+                desc=f"  └─ Transcribing {chunk_file_name}",
+                unit=" seg",
+                position=1,
+                leave=False,
+                total=0,
+                bar_format='{desc}: {postfix}'
+            )
+
+            # Transcribe with progress callback
+            success, message, segments = transcribe_chunk(
+                chunk_path,
+                model_size=args.model,
+                language=args.language,
+                engine=args.engine,
+                segment_progress_bar=segment_pbar
+            )
+
+            # Close segment progress bar
+            segment_pbar.close()
+
+            if not success:
+                return False, message, []
+
+            # Split long segments for better dubbing sync
+            if args.dub or args.dub_audio_only:
+                original_count = len(segments)
+
+                segments = split_long_segments(
+                    segments,
+                    max_duration_ms=args.max_segment_duration * 1000,
+                    max_words=args.max_segment_words
+                )
+
+                if len(segments) != original_count:
+                    tqdm.write(f"Podzielono długie segmenty: {original_count} → {len(segments)} segmentów")
+
+                # Fill gaps in timestamps if requested
+                if args.fill_gaps:
+                    segments = fill_timestamp_gaps(
+                        segments,
+                        max_gap_to_fill_ms=args.max_gap_fill,
+                        min_pause_ms=args.min_pause
+                    )
+                    tqdm.write(f"Wypełniono małe luki w timestampach")
+
+            # Adjust timestamps and add to all_segments
+            adjusted_segments = [(start_ms + current_offset_ms, end_ms + current_offset_ms, text)
+                                for start_ms, end_ms, text in segments]
+            all_segments.extend(adjusted_segments)
+
+            # Update offset for next chunk (based on last segment end time)
+            if segments:
+                last_segment_end = segments[-1][1]
+                current_offset_ms += last_segment_end
+
+            # Update chunk progress bar with segment count
+            chunk_pbar.set_postfix_str(f"{len(segments)} segments, total: {len(all_segments)}")
+            chunk_pbar.update(1)
+
+    return True, "", all_segments
+
+
+def _translate_segments_if_requested(segments: List[Tuple[int, int, str]], args) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
+    """
+    Handle translation step if requested.
+
+    Returns:
+        Tuple of (success, error_msg, segments)
+    """
+    if not args.translate:
+        return True, "", segments
+
+    OutputManager.stage_header(2, "Tłumaczenie")
+
+    # Parse translation direction
+    src_lang, tgt_lang = args.translate.split('-')
+
+    # Validate source language matches transcription language
+    if args.language and args.language != src_lang:
+        print(f"Ostrzeżenie: Język transkrypcji ({args.language}) różni się od źródłowego języka tłumaczenia ({src_lang})")
+
+    success, message, translated_segments = translate_segments(
+        segments,
+        source_lang=src_lang,
+        target_lang=tgt_lang
+    )
+
+    if not success:
+        return False, message, []
+
+    print(message)
+    return True, "", translated_segments
+
+
+def run_transcription_pipeline(audio_path: str, args, temp_dir: str) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
+    """
+    Run complete transcription pipeline.
+
+    Handles:
+    - Audio splitting
+    - Chunk transcription
+    - Segment splitting (for dubbing)
+    - Gap filling
+    - Translation (if requested)
+
+    Returns:
+        Tuple of (success, error_msg, segments)
+    """
+    # Stage 2: Split audio into chunks
+    success, message, chunk_paths = split_audio(audio_path, output_dir=temp_dir)
+    if not success:
+        return False, message, []
+
+    print(message)
+
+    if args.only_chunk:
+        # For --only-chunk, copy chunks to current directory before cleanup
+        for chunk_path in chunk_paths:
+            chunk_file = Path(chunk_path)
+            dest_path = Path.cwd() / chunk_file.name
+            shutil.copy2(chunk_path, dest_path)
+            print(f"Chunk skopiowany do: {dest_path}")
+        return False, "ONLY_CHUNK_MODE", []
+
+    # Stage 3: Transcribe all chunks
+    success, message, all_segments = _transcribe_all_chunks(chunk_paths, args)
+    if not success:
+        return False, message, []
+
+    # Translation step (if requested)
+    success, message, all_segments = _translate_segments_if_requested(all_segments, args)
+    if not success:
+        return False, message, []
+
+    if args.only_transcribe:
+        print(f"\nŁącznie transkrybowanych segmentów: {len(all_segments)}")
+        return False, "ONLY_TRANSCRIBE_MODE", []
+
+    return True, "", all_segments
+
+
+# ===== INPUT SOURCE PROCESSING =====
+
+def _process_local_file(file_path: str, temp_dir: str) -> Tuple[bool, str, str, str, str]:
+    """
+    Process local video file.
+
+    Returns:
+        Tuple of (success, error_msg, audio_path, video_path, input_stem)
+    """
+    is_valid, error_msg = validate_video_file(file_path)
+    if not is_valid:
+        return False, error_msg, "", "", ""
+
+    video_path = file_path
+
+    # Extract audio from local video
+    success, message, audio_path = extract_audio_from_video(file_path, output_dir=temp_dir)
+    if not success:
+        return False, message, "", "", ""
+
+    print(message)
+    input_stem = Path(file_path).stem
+
+    return True, "", audio_path, video_path, input_stem
+
+
+def _process_youtube_url(url: str, temp_dir: str, args) -> Tuple[bool, str, str, str, str]:
+    """
+    Process YouTube URL.
+
+    Returns:
+        Tuple of (success, error_msg, audio_path, video_path, input_stem)
+    """
+    # Validate URL
+    if not validate_youtube_url(url):
+        return False, "Błąd: Niepoprawny URL YouTube. Podaj link w formacie: https://www.youtube.com/watch?v=VIDEO_ID", "", "", ""
+
+    # Extract video ID for naming
+    video_id_match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', url)
+    input_stem = video_id_match.group(1) if video_id_match else "output"
+
+    video_path = ""
+
+    # If dubbing is requested, download full video
+    if args.dub and not args.dub_audio_only:
+        print(f"\n=== Dubbing włączony: Pobieranie pełnego wideo ===")
+        success, message, video_path = download_video(url, output_dir=temp_dir, quality=args.video_quality)
+        if not success:
+            return False, message, "", "", ""
+
+        print(message)
+
+        # Extract audio from downloaded video
+        success, message, audio_path = extract_audio_from_video(video_path, output_dir=temp_dir)
+        if not success:
+            return False, message, "", "", ""
+
+        print(message)
+    elif args.dub_audio_only:
+        # Audio-only dubbing mode - just download audio
+        print(f"\n=== Dubbing audio-only włączony: Pobieranie audio ===")
+        success, message, audio_path = download_audio(url, output_dir=temp_dir)
+        if not success:
+            return False, message, "", "", ""
+
+        print(message)
+    else:
+        # Only audio needed - download audio only
+        success, message, audio_path = download_audio(url, output_dir=temp_dir)
+        if not success:
+            return False, message, "", "", ""
+
+        print(message)
+
+    return True, "", audio_path, video_path, input_stem
+
+
+def process_input_source(args, temp_dir: str) -> Tuple[bool, str, str, str, str]:
+    """
+    Process input source (local file or YouTube URL).
+
+    Returns:
+        Tuple of (success, error_msg, audio_path, video_path, input_stem)
+    """
+    if args.local:
+        return _process_local_file(args.local, temp_dir)
+    else:
+        return _process_youtube_url(args.url, temp_dir, args)
+
+
+# ===== MODE HANDLERS =====
+
+def handle_video_download_mode(args) -> int:
+    """Handle --download mode (download video only, no transcription)."""
+    if not validate_youtube_url(args.download):
+        OutputManager.error("Niepoprawny URL YouTube.")
+        return 1
+
+    # Check dependencies
+    deps_ok, deps_msg = check_dependencies()
+    if not deps_ok:
+        print(deps_msg)
+        return 1
+
+    OutputManager.mode_header("Tryb pobierania wideo", {
+        "Pobieranie z": args.download,
+        "Jakość": f"{args.video_quality}p"
+    })
+
+    # Download to current directory
+    success, message, video_path = download_video(
+        args.download,
+        output_dir=".",
+        quality=args.video_quality
+    )
+
+    if not success:
+        print(message)
+        return 1
+
+    OutputManager.info(message)
+    OutputManager.success(f"Wideo pobrane: {video_path}")
+    return 0
+
+
+def handle_audio_download_mode(args) -> int:
+    """Handle --download-audio-only mode (download audio only, no transcription)."""
+    if not validate_youtube_url(args.download_audio_only):
+        OutputManager.error("Niepoprawny URL YouTube.")
+        return 1
+
+    # Check dependencies
+    deps_ok, deps_msg = check_dependencies()
+    if not deps_ok:
+        print(deps_msg)
+        return 1
+
+    OutputManager.mode_header("Tryb pobierania audio", {
+        "Pobieranie z": args.download_audio_only,
+        "Jakość": args.audio_quality
+    })
+
+    # Download to current directory
+    success, message, audio_path = download_audio(
+        args.download_audio_only,
+        output_dir="."
+    )
+
+    if not success:
+        print(message)
+        return 1
+
+    OutputManager.info(message)
+    OutputManager.success(f"Audio pobrane: {audio_path}")
+    return 0
+
+
+def handle_test_merge_mode(args) -> int:
+    """Handle --test-merge mode (test SRT generation with hardcoded data)."""
+    print("Test generowania SRT z przykładowymi danymi...")
+
+    # Hardcoded test segments simulating 2 chunks
+    chunk1_segments = [
+        (0, 5000, "Witam w przykładowym filmie o transkrypcji."),
+        (5500, 12000, "To jest pierwszy segment z pierwszego chunka."),
+        (12500, 20000, "Tutaj sprawdzamy czy polskie znaki działają: ąćęłńóśźż."),
+        (20500, 30000, "Koniec pierwszego chunka.")
+    ]
+
+    chunk2_segments = [
+        (0, 8000, "To jest początek drugiego chunka."),
+        (8500, 18000, "Timestampy powinny być przesunięte o 30 sekund."),
+        (18500, 28000, "Sprawdzamy merge i scalanie segmentów."),
+        (28500, 35000, "Koniec testu.")
+    ]
+
+    # Simulate merging process
+    all_segments = []
+    chunk_offsets = [0, 30000]
+
+    for start_ms, end_ms, text in chunk1_segments:
+        all_segments.append((start_ms + chunk_offsets[0], end_ms + chunk_offsets[0], text))
+
+    for start_ms, end_ms, text in chunk2_segments:
+        all_segments.append((start_ms + chunk_offsets[1], end_ms + chunk_offsets[1], text))
+
+    # Write to test output file
+    test_output = "test_output.srt"
+    success, message = write_srt(all_segments, test_output)
+
+    if success:
+        print(message)
+        print(f"\nPodgląd zawartości {test_output}:")
+        print("-" * 60)
+        with open(test_output, 'r', encoding='utf-8') as f:
+            content = f.read()
+            print(content[:500])
+            if len(content) > 500:
+                print("...")
+        print("-" * 60)
+        print(f"\nOtwórz plik '{test_output}' w VLC lub innym odtwarzaczu aby sprawdzić napisy.")
+        return 0
+    else:
+        print(message)
+        return 1
+
+
+# ===== VALIDATION FUNCTIONS =====
+
+
 def validate_youtube_url(url: str) -> bool:
     """
     Validate if the provided URL is a valid YouTube URL.
@@ -155,18 +928,9 @@ def download_audio(url: str, output_dir: str = ".") -> Tuple[bool, str, str]:
     audio_file = output_path / f"{video_id}.wav"
 
     try:
-        print(f"Pobieranie audio z YouTube... ({url})")
+        OutputManager.info(f"Pobieranie audio z YouTube... ({url})")
 
-        cmd = [
-            'yt-dlp',
-            '-f', 'bestaudio/best',
-            '-x',
-            '--audio-format', 'wav',
-            '--audio-quality', '0',
-            '-o', str(audio_file),
-            url
-        ]
-
+        cmd = build_ytdlp_audio_download_cmd(url, str(audio_file))
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
         if result.returncode != 0:
@@ -179,19 +943,17 @@ def download_audio(url: str, output_dir: str = ".") -> Tuple[bool, str, str]:
         if not audio_file.exists():
             return False, f"Błąd: Plik audio nie został utworzony: {audio_file}", ""
 
-        print(f"Audio pobrane: {audio_file}")
+        OutputManager.info(f"Audio pobrane: {audio_file}")
 
         # Verify audio format with ffprobe
-        probe_cmd = ['ffprobe', '-v', 'error', '-show_entries',
-                     'stream=channels,sample_rate', '-of', 'default=noprint_wrappers=1:nokey=1:noescapes=1',
-                     str(audio_file)]
+        probe_cmd = build_ffprobe_audio_info_cmd(audio_file)
         probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
 
         if probe_result.returncode == 0:
             output_info = probe_result.stdout.strip().split('\n')
             channels = int(output_info[0]) if len(output_info) > 0 else 0
             sample_rate = int(output_info[1]) if len(output_info) > 1 else 0
-            print(f"Format audio: {channels} kanał(y), {sample_rate} Hz")
+            OutputManager.detail(f"Format audio: {channels} kanał(y), {sample_rate} Hz")
 
         return True, f"Audio pobrane pomyślnie: {audio_file}", str(audio_file)
 
@@ -226,18 +988,7 @@ def download_video(url: str, output_dir: str = ".", quality: str = "1080") -> Tu
     try:
         print(f"Pobieranie wideo z YouTube w jakości {quality}p... ({url})")
 
-        # Format selection: prefer 1080p, fallback to best available
-        # bestvideo[height<=1080]+bestaudio/best[height<=1080]/best
-        format_str = f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best"
-
-        cmd = [
-            'yt-dlp',
-            '-f', format_str,
-            '--merge-output-format', 'mp4',
-            '-o', str(video_file),
-            url
-        ]
-
+        cmd = build_ytdlp_video_download_cmd(url, str(video_file), quality)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
 
         if result.returncode != 0:
@@ -251,10 +1002,7 @@ def download_video(url: str, output_dir: str = ".", quality: str = "1080") -> Tu
             return False, f"Błąd: Plik wideo nie został utworzony: {video_file}", ""
 
         # Get video info with ffprobe
-        probe_cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
-                     '-show_entries', 'stream=width,height,codec_name',
-                     '-of', 'default=noprint_wrappers=1:nokey=1',
-                     str(video_file)]
+        probe_cmd = build_ffprobe_video_info_cmd(video_file)
         probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
 
         if probe_result.returncode == 0:
@@ -299,17 +1047,7 @@ def extract_audio_from_video(video_path: str, output_dir: str = ".") -> Tuple[bo
     try:
         print(f"Ekstrakcja audio z pliku wideo... ({video_path})")
 
-        cmd = [
-            'ffmpeg',
-            '-i', str(video_path),
-            '-vn',  # No video
-            '-acodec', 'pcm_s16le',  # PCM 16-bit
-            '-ar', '16000',  # 16kHz sample rate
-            '-ac', '1',  # Mono
-            '-y',  # Overwrite output
-            str(audio_file)
-        ]
-
+        cmd = build_ffmpeg_audio_extraction_cmd(video_path, audio_file)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
         if result.returncode != 0:
@@ -322,16 +1060,14 @@ def extract_audio_from_video(video_path: str, output_dir: str = ".") -> Tuple[bo
         print(f"Audio wyekstrahowane: {audio_file}")
 
         # Verify audio format with ffprobe
-        probe_cmd = ['ffprobe', '-v', 'error', '-show_entries',
-                     'stream=channels,sample_rate', '-of', 'default=noprint_wrappers=1:nokey=1:noescapes=1',
-                     str(audio_file)]
+        probe_cmd = build_ffprobe_audio_info_cmd(audio_file)
         probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
 
         if probe_result.returncode == 0:
             output_info = probe_result.stdout.strip().split('\n')
             channels = int(output_info[0]) if len(output_info) > 0 else 0
             sample_rate = int(output_info[1]) if len(output_info) > 1 else 0
-            print(f"Format audio: {channels} kanał(y), {sample_rate} Hz")
+            OutputManager.detail(f"Format audio: {channels} kanał(y), {sample_rate} Hz")
 
         return True, f"Audio wyekstrahowane pomyślnie: {audio_file}", str(audio_file)
 
@@ -352,14 +1088,7 @@ def get_audio_duration(wav_path: str) -> Tuple[bool, float]:
         Tuple of (success: bool, duration_seconds: float)
     """
     try:
-        probe_cmd = [
-            'ffprobe',
-            '-v', 'error',
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            str(wav_path)
-        ]
-
+        probe_cmd = build_ffprobe_duration_cmd(wav_path)
         result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=10)
 
         if result.returncode != 0:
@@ -460,7 +1189,7 @@ def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "p
                 else:
                     raise
 
-            print(f"\n=== Etap 1: Transkrypcja ===")
+            OutputManager.stage_header(1, "Transkrypcja")
             tqdm.write(f"\nTranskrypcja: {wav_file.name}...")
 
             # Transcribe
@@ -819,18 +1548,7 @@ def split_audio(wav_path: str, chunk_duration_sec: int = 1800, output_dir: str =
             chunk_file = output_path / f"{stem}_chunk_{chunk_num:03d}.wav"
 
             # Use ffmpeg to extract chunk
-            cmd = [
-                'ffmpeg',
-                '-i', str(wav_path),
-                '-ss', str(start_time),
-                '-t', str(chunk_duration_sec),
-                '-acodec', 'pcm_s16le',
-                '-ar', '16000',
-                '-ac', '1',
-                '-y',
-                str(chunk_file)
-            ]
-
+            cmd = build_ffmpeg_audio_split_cmd(wav_path, chunk_file, start_time, chunk_duration_sec)
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
             if result.returncode != 0:
@@ -1181,20 +1899,7 @@ def create_dubbed_video(
         Tuple of (success: bool, message: str)
     """
     try:
-        cmd = [
-            'ffmpeg',
-            '-y',
-            '-i', str(original_video_path),
-            '-i', str(mixed_audio_path),
-            '-map', '0:v:0',
-            '-map', '1:a:0',
-            '-c:v', 'copy',
-            '-c:a', 'aac',
-            '-b:a', '192k',
-            '-shortest',
-            str(output_video_path)
-        ]
-
+        cmd = build_ffmpeg_video_merge_cmd(original_video_path, mixed_audio_path, output_video_path)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
 
         if result.returncode != 0:
@@ -1236,31 +1941,11 @@ def burn_subtitles_to_video(
         if not Path(srt_path).exists():
             return False, f"Błąd: Plik SRT nie istnieje: {srt_path}"
 
-        # Convert paths to absolute and escape for ffmpeg
-        video_path_abs = str(Path(video_path).resolve())
-        srt_path_abs = str(Path(srt_path).resolve())
-        
-        # Escape special characters for Windows paths in filter
-        srt_path_filter = srt_path_abs.replace('\\', '/').replace(':', '\\:')
-        
         print(f"Wgrywanie napisów do wideo...")
         print(f"Wideo: {video_path}")
         print(f"Napisy: {srt_path}")
-        
-        # Build subtitles filter with custom style
-        subtitles_filter = f"subtitles='{srt_path_filter}':force_style='{subtitle_style}':charenc=UTF-8"
-        
-        cmd = [
-            'ffmpeg', '-y',
-            '-i', video_path_abs,
-            '-vf', subtitles_filter,
-            '-c:v', 'libx264',           # Re-encode video with H.264
-            '-preset', 'medium',          # Encoding speed (ultrafast, fast, medium, slow)
-            '-crf', '23',                 # Quality (18-28, lower = better)
-            '-c:a', 'copy',               # Copy audio without re-encoding
-            str(output_path)
-        ]
-        
+
+        cmd = build_ffmpeg_subtitle_burn_cmd(video_path, srt_path, output_path, subtitle_style)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
         
         if result.returncode != 0:
@@ -1400,119 +2085,15 @@ def main():
 
     args = parser.parse_args()
 
-    # Handle --download mode (download video only, no transcription)
+    # Handle special modes
     if args.download:
-        if not validate_youtube_url(args.download):
-            print("Błąd: Niepoprawny URL YouTube.")
-            return 1
-        
-        # Check dependencies
-        deps_ok, deps_msg = check_dependencies()
-        if not deps_ok:
-            print(deps_msg)
-            return 1
-        
-        print(f"=== Tryb pobierania wideo ===")
-        print(f"Pobieranie z: {args.download}")
-        print(f"Jakość: {args.video_quality}p")
-        
-        # Download to current directory
-        success, message, video_path = download_video(
-            args.download, 
-            output_dir=".",  # Current directory
-            quality=args.video_quality
-        )
-        
-        if not success:
-            print(message)
-            return 1
-        
-        print(message)
-        print(f"\n✓ Wideo pobrane: {video_path}")
-        return 0
+        return handle_video_download_mode(args)
 
-    # Handle --download-audio-only mode (download audio only, no transcription)
     if args.download_audio_only:
-        if not validate_youtube_url(args.download_audio_only):
-            print("Błąd: Niepoprawny URL YouTube.")
-            return 1
+        return handle_audio_download_mode(args)
 
-        # Check dependencies
-        deps_ok, deps_msg = check_dependencies()
-        if not deps_ok:
-            print(deps_msg)
-            return 1
-
-        print(f"=== Tryb pobierania audio ===")
-        print(f"Pobieranie z: {args.download_audio_only}")
-        print(f"Jakość: {args.audio_quality}")
-
-        # Download to current directory
-        success, message, audio_path = download_audio(
-            args.download_audio_only,
-            output_dir="."  # Current directory
-        )
-
-        if not success:
-            print(message)
-            return 1
-
-        print(message)
-        print(f"\n✓ Audio pobrane: {audio_path}")
-        return 0
-
-    # Test merge functionality with hardcoded data
     if args.test_merge:
-        print("Test generowania SRT z przykładowymi danymi...")
-
-        # Hardcoded test segments simulating 2 chunks
-        # Chunk 1: 0-30 seconds
-        chunk1_segments = [
-            (0, 5000, "Witam w przykładowym filmie o transkrypcji."),
-            (5500, 12000, "To jest pierwszy segment z pierwszego chunka."),
-            (12500, 20000, "Tutaj sprawdzamy czy polskie znaki działają: ąćęłńóśźż."),
-            (20500, 30000, "Koniec pierwszego chunka.")
-        ]
-
-        # Chunk 2: 30-60 seconds (timestamps will be adjusted)
-        chunk2_segments = [
-            (0, 8000, "To jest początek drugiego chunka."),
-            (8500, 18000, "Timestampy powinny być przesunięte o 30 sekund."),
-            (18500, 28000, "Sprawdzamy merge i scalanie segmentów."),
-            (28500, 35000, "Koniec testu.")
-        ]
-
-        # Simulate merging process
-        all_segments = []
-        chunk_offsets = [0, 30000]  # Second chunk starts at 30 seconds
-
-        # Add chunk 1 segments with offset
-        for start_ms, end_ms, text in chunk1_segments:
-            all_segments.append((start_ms + chunk_offsets[0], end_ms + chunk_offsets[0], text))
-
-        # Add chunk 2 segments with offset
-        for start_ms, end_ms, text in chunk2_segments:
-            all_segments.append((start_ms + chunk_offsets[1], end_ms + chunk_offsets[1], text))
-
-        # Write to test output file
-        test_output = "test_output.srt"
-        success, message = write_srt(all_segments, test_output)
-
-        if success:
-            print(message)
-            print(f"\nPodgląd zawartości {test_output}:")
-            print("-" * 60)
-            with open(test_output, 'r', encoding='utf-8') as f:
-                content = f.read()
-                print(content[:500])  # Print first 500 chars
-                if len(content) > 500:
-                    print("...")
-            print("-" * 60)
-            print(f"\nOtwórz plik '{test_output}' w VLC lub innym odtwarzaczu aby sprawdzić napisy.")
-            return 0
-        else:
-            print(message)
-            return 1
+        return handle_test_merge_mode(args)
 
     # Check input source (YouTube URL or local file)
     if not args.url and not args.local:
@@ -1538,78 +2119,16 @@ def main():
     # Create temporary directory for intermediate files
     temp_dir = None
     original_video_path = None
-    should_cleanup_video = False  # Flag to track if we downloaded video to temp
-    
+
     try:
         temp_dir = tempfile.mkdtemp(prefix="transcribe_")
         print(f"Katalog tymczasowy: {temp_dir}")
 
         # Process input source: local file or YouTube URL
-        if args.local:
-            # Local file mode
-            is_valid, error_msg = validate_video_file(args.local)
-            if not is_valid:
-                print(error_msg)
-                return 1
-
-            original_video_path = args.local
-
-            # Extract audio from local video
-            success, message, audio_path = extract_audio_from_video(args.local, output_dir=temp_dir)
-            if not success:
-                print(message)
-                return 1
-
-            print(message)
-            input_stem = Path(args.local).stem
-            
-        else:
-            # YouTube mode
-            # Validate URL
-            if not validate_youtube_url(args.url):
-                print("Błąd: Niepoprawny URL YouTube. Podaj link w formacie: https://www.youtube.com/watch?v=VIDEO_ID")
-                return 1
-
-            # Extract video ID for naming
-            video_id_match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', args.url)
-            input_stem = video_id_match.group(1) if video_id_match else "output"
-
-            # If dubbing is requested, download full video
-            if args.dub and not args.dub_audio_only:
-                print(f"\n=== Dubbing włączony: Pobieranie pełnego wideo ===")
-                success, message, video_path = download_video(args.url, output_dir=temp_dir, quality=args.video_quality)
-                if not success:
-                    print(message)
-                    return 1
-
-                print(message)
-                original_video_path = video_path
-                should_cleanup_video = True  # Will be cleaned up with temp_dir
-
-                # Extract audio from downloaded video
-                success, message, audio_path = extract_audio_from_video(video_path, output_dir=temp_dir)
-                if not success:
-                    print(message)
-                    return 1
-
-                print(message)
-            elif args.dub_audio_only:
-                # Audio-only dubbing mode - just download audio
-                print(f"\n=== Dubbing audio-only włączony: Pobieranie audio ===")
-                success, message, audio_path = download_audio(args.url, output_dir=temp_dir)
-                if not success:
-                    print(message)
-                    return 1
-
-                print(message)
-            else:
-                # Only audio needed - download audio only
-                success, message, audio_path = download_audio(args.url, output_dir=temp_dir)
-                if not success:
-                    print(message)
-                    return 1
-
-                print(message)
+        success, error_msg, audio_path, original_video_path, input_stem = process_input_source(args, temp_dir)
+        if not success:
+            print(error_msg)
+            return 1
 
         if args.only_download:
             # For --only-download, copy file to current directory before cleanup
@@ -1619,303 +2138,50 @@ def main():
             print(f"Plik audio skopiowany do: {dest_path}")
             return 0
 
-        # Stage 2: Split audio into chunks (in temp directory)
-        success, message, chunk_paths = split_audio(audio_path, output_dir=temp_dir)
+        # Run transcription pipeline (handles audio splitting, transcription, translation)
+        success, error_msg, all_segments = run_transcription_pipeline(audio_path, args, temp_dir)
         if not success:
-            print(message)
+            # Special exit codes for --only-chunk and --only-transcribe modes
+            if error_msg in ["ONLY_CHUNK_MODE", "ONLY_TRANSCRIBE_MODE"]:
+                return 0
+            print(error_msg)
             return 1
 
-        print(message)
-
-        if args.only_chunk:
-            # For --only-chunk, copy chunks to current directory before cleanup
-            for chunk_path in chunk_paths:
-                chunk_file = Path(chunk_path)
-                dest_path = Path.cwd() / chunk_file.name
-                shutil.copy2(chunk_path, dest_path)
-                print(f"Chunk skopiowany do: {dest_path}")
-            return 0
-
-        # Stage 3: Transcribe each chunk
-        all_segments = []
-        chunk_offsets = []
-        current_offset_ms = 0
-
-        # Create overall progress bar for chunks
-        with tqdm(total=len(chunk_paths), desc="Overall Progress", unit="chunk", position=0) as chunk_pbar:
-            for idx, chunk_path in enumerate(chunk_paths, 1):
-                chunk_file_name = Path(chunk_path).name
-
-                # Update chunk progress bar description
-                chunk_pbar.set_description(f"Chunk {idx}/{len(chunk_paths)}")
-
-                # Create segment progress bar for this chunk (indeterminate - no total)
-                segment_pbar = tqdm(
-                    desc=f"  └─ Transcribing {chunk_file_name}",
-                    unit=" seg",
-                    position=1,
-                    leave=False,  # Don't leave segment bar after completion
-                    total=0,  # Set total to 0 for indeterminate progress
-                    bar_format='{desc}: {postfix}'  # Custom format without progress bar
-                )
-
-                # Transcribe with progress callback
-                success, message, segments = transcribe_chunk(
-                    chunk_path,
-                    model_size=args.model,
-                    language=args.language,
-                     engine=args.engine,
-                    segment_progress_bar=segment_pbar
-                )
-
-                # Close segment progress bar
-                segment_pbar.close()
-
-                if not success:
-                    print(message)
-                    return 1
-                
-                # Split long segments for better dubbing sync
-                if args.dub or args.dub_audio_only:
-                    original_count = len(segments)
-                    
-                    segments = split_long_segments(
-                        segments,
-                        max_duration_ms=args.max_segment_duration * 1000,
-                        max_words=args.max_segment_words
-                    )
-                    
-                    if len(segments) != original_count:
-                        tqdm.write(f"Podzielono długie segmenty: {original_count} → {len(segments)} segmentów")
-
-                    # Fill gaps in timestamps if requested
-                    if args.fill_gaps:
-                        segments = fill_timestamp_gaps(
-                            segments, 
-                            max_gap_to_fill_ms=args.max_gap_fill,
-                            min_pause_ms=args.min_pause
-                        )
-                        tqdm.write(f"Wypełniono małe luki w timestampach")
-
-                    
-                # Store offset for this chunk
-                chunk_offsets.append(current_offset_ms)
-
-                # Adjust timestamps and add to all_segments
-                adjusted_segments = [(start_ms + current_offset_ms, end_ms + current_offset_ms, text)
-                                    for start_ms, end_ms, text in segments]
-                all_segments.extend(adjusted_segments)
-
-                # Update offset for next chunk (based on last segment end time)
-                if segments:
-                    last_segment_end = segments[-1][1]  # end_ms of last segment
-                    current_offset_ms += last_segment_end
-
-                # Update chunk progress bar with segment count
-                chunk_pbar.set_postfix_str(f"{len(segments)} segments, total: {len(all_segments)}")
-                chunk_pbar.update(1)
-
-        # Translation step (if requested)
-        if args.translate:
-            print(f"\n=== Etap 2: Tłumaczenie ===")
-
-            # Parse translation direction
-            src_lang, tgt_lang = args.translate.split('-')
-
-            # Validate source language matches transcription language
-            if args.language != src_lang:
-                print(f"Ostrzeżenie: Język transkrypcji ({args.language}) różni się od źródłowego języka tłumaczenia ({src_lang})")
-
-            success, message, translated_segments = translate_segments(
-                all_segments,
-                source_lang=src_lang,
-                target_lang=tgt_lang
-            )
-
-            if not success:
-                print(message)
-                return 1
-
-            print(message)
-            all_segments = translated_segments
-
-        if args.only_transcribe:
-            print(f"\nŁącznie transkrybowanych segmentów: {len(all_segments)}")
-            return 0
-
-        # Stage 4: Generate SRT file
-        print(f"\n=== Etap 3: Generowanie pliku SRT ===")
-        print(f"Łącznie segmentów: {len(all_segments)}")
-
-        # Determine output filename
-        if args.output:
-            # User explicitly specified output - always honor it
-            srt_filename = args.output
-            if not srt_filename.endswith('.srt'):
-                srt_filename += '.srt'
-        elif args.burn_subtitles:
-            # Burning subtitles without explicit output - use temp directory
-            # File will be cleaned up after burning
-            srt_filename = str(Path(temp_dir) / f"{input_stem}.srt")
-        else:
-            # Normal case: write to current directory
-            srt_filename = f"{input_stem}.srt"
-
-        # Write SRT file to current directory
-        success, message = write_srt(all_segments, srt_filename)
+        # Generate SRT file
+        success, error_msg, srt_filename = generate_srt_output(all_segments, input_stem, args, temp_dir)
         if not success:
-            print(message)
+            print(error_msg)
             return 1
 
-        print(message)
-
-                # Stage 5: Burn subtitles to video if requested
+        # Burn subtitles to video if requested
         if args.burn_subtitles:
-            print(f"\n=== Etap 5: Wgrywanie napisów do wideo ===")
-            
-            # Need video file
-            if not original_video_path:
-                # Try to download video if we have URL
-                if args.url:
-                    print("Pobieranie wideo dla napisów...")
-                    success, message, video_path = download_video(
-                        args.url, 
-                        output_dir=temp_dir, 
-                        quality=args.video_quality
-                    )
-                    if not success:
-                        print(message)
-                        return 1
-                    original_video_path = video_path
-                    should_cleanup_video = True
-                else:
-                    print("Błąd: --burn-subtitles wymaga wideo (YouTube URL lub --local)")
-                    return 1
-            
-            # Determine output filename
-            if args.burn_output:
-                burn_output_filename = args.burn_output
-                if not burn_output_filename.endswith('.mp4'):
-                    burn_output_filename += '.mp4'
-            else:
-                burn_output_filename = f"{input_stem}_subtitled.mp4"
-            
-            # Burn subtitles
-            success, message = burn_subtitles_to_video(
+            success, error_msg = burn_subtitles_to_video_pipeline(
                 original_video_path,
                 srt_filename,
-                burn_output_filename,
-                subtitle_style=args.subtitle_style
+                input_stem,
+                args,
+                temp_dir
             )
-            
             if not success:
-                print(message)
+                print(error_msg)
                 return 1
-            
-            print(message)
-            print(f"\n✓ Wideo z napisami: {burn_output_filename}")
 
-        # Stage 6: TTS Dubbing (if requested)
+        # TTS Dubbing if requested
         if args.dub or args.dub_audio_only:
-            print(f"\n=== Etap 4: Generowanie dubbingu TTS ===")
-
-            # For full dubbing, we need video file
-            if args.dub and not original_video_path:
-                print("Błąd: Dubbing wymaga pliku wideo")
-                return 1
-
-            # Create TTS directory in temp
-            tts_dir = Path(temp_dir) / "tts"
-            tts_dir.mkdir(exist_ok=True)
-
-            # Generate TTS for each segment
-            success, message, tts_files = generate_tts_segments(
+            success, error_msg = run_dubbing_pipeline(
                 all_segments,
-                str(tts_dir),
-                voice=args.tts_voice
-            )
-
-            if not success:
-                print(message)
-                return 1
-
-            print(message)
-
-            # Get total duration of original audio
-            success, total_duration_ms = get_audio_duration_ms(audio_path)
-            if not success:
-                print("Błąd: Nie można odczytać długości audio")
-                return 1
-
-            # Combine TTS segments into single track
-            tts_combined_path = Path(temp_dir) / "tts_combined.wav"
-            success, message = create_tts_audio_track(
-                tts_files,
-                total_duration_ms,
-                str(tts_combined_path)
-            )
-
-            if not success:
-                print(message)
-                return 1
-
-            print(message)
-
-            # Mix original audio with TTS
-            mixed_audio_path = Path(temp_dir) / "mixed_audio.wav"
-            success, message = mix_audio_tracks(
                 audio_path,
-                str(tts_combined_path),
-                str(mixed_audio_path),
-                original_volume=args.original_volume,
-                tts_volume=args.tts_volume
+                original_video_path,
+                input_stem,
+                args,
+                temp_dir
             )
-
             if not success:
-                print(message)
+                print(error_msg)
                 return 1
 
-            print(message)
 
-            # Audio-only mode: just save the mixed audio
-            if args.dub_audio_only:
-                if args.dub_output:
-                    dubbed_audio_filename = args.dub_output
-                    if not dubbed_audio_filename.endswith('.wav'):
-                        dubbed_audio_filename += '.wav'
-                else:
-                    dubbed_audio_filename = f"{input_stem}_dubbed.wav"
-
-                # Copy mixed audio to output
-                shutil.copy2(str(mixed_audio_path), dubbed_audio_filename)
-                
-                print(f"\n[OK] Dubbing audio zakończony pomyślnie!")
-                print(f"[OK] Audio z dubbingiem: {dubbed_audio_filename}")
-            else:
-                # Full video dubbing mode
-                if args.dub_output:
-                    dubbed_video_filename = args.dub_output
-                    if not dubbed_video_filename.endswith('.mp4'):
-                        dubbed_video_filename += '.mp4'
-                else:
-                    dubbed_video_filename = f"{input_stem}_dubbed.mp4"
-
-                success, message = create_dubbed_video(
-                    original_video_path,
-                    str(mixed_audio_path),
-                    dubbed_video_filename
-                )
-
-                if not success:
-                    print(message)
-                    return 1
-
-                print(message)
-                print(f"\n[OK] Dubbing zakończony pomyślnie!")
-                print(f"[OK] Wideo z dubbingiem: {dubbed_video_filename}")
-
-
-        print(f"\n[OK] Transkrypcja zakończona pomyślnie!")
+        OutputManager.success("Transkrypcja zakończona pomyślnie!")
         # print(f"[OK] Plik SRT zapisany: {srt_filename}")
         # print(f"\nMożesz otworzyć plik SRT w VLC lub innym odtwarzaczu wideo.")
 
