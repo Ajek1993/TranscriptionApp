@@ -1322,9 +1322,14 @@ def main():
                        help='Nazwa pliku wyjściowego SRT (domyślnie: video_id.srt lub nazwa_pliku.srt)')
     basic_group.add_argument('--download', type=str, metavar='URL',
                    help='Pobierz tylko wideo z YouTube (bez transkrypcji)')
+    basic_group.add_argument('--download-audio-only', type=str, metavar='URL',
+                   help='Pobierz tylko audio z YouTube (bez transkrypcji)')
     basic_group.add_argument('--video-quality', type=str, default='1080',
                        choices=['720', '1080', '1440', '2160'],
                        help='Jakość wideo przy pobieraniu z YouTube (domyślnie: 1080)')
+    basic_group.add_argument('--audio-quality', type=str, default='best',
+                       choices=['best', '192', '128', '96'],
+                       help='Jakość audio przy pobieraniu (domyślnie: best)')
 
     # ===== OPCJE TRANSKRYPCJI =====
     transcription_group = parser.add_argument_group('Opcje transkrypcji', 'Konfiguracja modelu i języka transkrypcji')
@@ -1426,6 +1431,35 @@ def main():
         print(f"\n✓ Wideo pobrane: {video_path}")
         return 0
 
+    # Handle --download-audio-only mode (download audio only, no transcription)
+    if args.download_audio_only:
+        if not validate_youtube_url(args.download_audio_only):
+            print("Błąd: Niepoprawny URL YouTube.")
+            return 1
+
+        # Check dependencies
+        deps_ok, deps_msg = check_dependencies()
+        if not deps_ok:
+            print(deps_msg)
+            return 1
+
+        print(f"=== Tryb pobierania audio ===")
+        print(f"Pobieranie z: {args.download_audio_only}")
+        print(f"Jakość: {args.audio_quality}")
+
+        # Download to current directory
+        success, message, audio_path = download_audio(
+            args.download_audio_only,
+            output_dir="."  # Current directory
+        )
+
+        if not success:
+            print(message)
+            return 1
+
+        print(message)
+        print(f"\n✓ Audio pobrane: {audio_path}")
+        return 0
 
     # Test merge functionality with hardcoded data
     if args.test_merge:

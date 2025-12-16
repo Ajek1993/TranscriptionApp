@@ -112,6 +112,37 @@ python transcribe.py --download "URL" --video-quality 2160
 
 **Uwaga**: Flaga `--download` działa niezależnie - nie wykonuje transkrypcji ani dubbingu.
 
+### Pobieranie audio z YouTube (bez transkrypcji)
+
+Możesz użyć narzędzia tylko do pobierania audio z YouTube w formacie WAV, bez transkrypcji:
+
+```bash
+# Pobierz audio z domyślną najlepszą jakością
+python transcribe.py --download-audio-only "https://www.youtube.com/watch?v=VIDEO_ID"
+
+# Pobierz audio z określoną jakością bitrate
+python transcribe.py --download-audio-only "URL" --audio-quality 192
+
+# Dostępne jakości audio
+--audio-quality best   # Najlepsza dostępna jakość (domyślnie)
+--audio-quality 192    # 192 kbps
+--audio-quality 128    # 128 kbps
+--audio-quality 96     # 96 kbps
+```
+
+**Format pliku wyjściowego:**
+- Format: WAV (mono, 16kHz)
+- Nazwa: `{VIDEO_ID}.wav` (np. `dQw4w9WgXcQ.wav`)
+- Lokalizacja: bieżący katalog
+
+**Przypadki użycia:**
+- Wyodrębnienie audio z wideo bez pobierania całego pliku wideo
+- Zmniejszenie ruchu sieciowego
+- Przetwarzanie audio w innym narzędziu
+- Archiwizacja ścieżki dźwiękowej
+
+**Uwaga**: Flaga `--download-audio-only` działa niezależnie - nie wykonuje transkrypcji ani dubbingu.
+
 ### Dubbing TTS
 
 Dubbing działa zarówno z plikami lokalnymi jak i YouTube.
