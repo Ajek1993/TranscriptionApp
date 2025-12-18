@@ -1,14 +1,30 @@
-yt-dlp>=2024.01.01
-faster-whisper>=0.10.0
-tqdm>=4.66.0
-deep-translator>=1.11.0
+# =============================================================================
+# REQUIREMENTS FOR DOCKER (CUDA 12.8 + cuDNN 9)
+# =============================================================================
+# Ten plik jest zoptymalizowany dla obrazu Docker nvidia/cuda:12.8.0-cudnn9
+# Dla instalacji natywnej na Windows uzyj: requirements-windows.txt
+# =============================================================================
+
+# Core dependencies
+yt-dlp>=2024.12.01
+faster-whisper>=1.1.0
+tqdm>=4.67.0
+deep-translator>=1.11.4
 edge-tts>=7.0.0
+openai-whisper>=20240930
 
-# GPU Support (instaluj ręcznie dla akceleracji CUDA 12.1):
-# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 --no-cache-dir
+# CTranslate2 with cuDNN 9 support (required for CUDA 12.8)
+ctranslate2>=4.6.0
 
-# Opcjonalnie - silnik OpenAI Whisper:
-# openai-whisper>=20231117
+# =============================================================================
+# PyTorch is installed separately in Dockerfile:
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# =============================================================================
 
-# UWAGA: CTranslate2 4.6.2+ wymaga CUDA 12.x (NIE 11.8)!
-# Szczegółowa instrukcja konfiguracji GPU: CUDA_CONFIG.md
+# =============================================================================
+# Kompatybilnosc z CUDA 12.8 + cuDNN 9:
+# - faster-whisper >= 1.1.0 (CTranslate2 >= 4.5.0)
+# - openai-whisper >= 20240930 (PyTorch cu124)
+# - WhisperX >= 3.3.0 (ctranslate2 >= 4.6.0 + torch >= 2.5.1)
+# - Coqui TTS >= 0.27.0 (PyTorch CUDA 12.x)
+# =============================================================================
