@@ -1225,6 +1225,10 @@ def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "p
                 import whisper
             except ImportError:
                 return False, "Błąd: whisper nie jest zainstalowany. Zainstaluj: pip install openai-whisper", []
+            
+            # Detect device
+            device, device_info = detect_device()
+            tqdm.write(f"Używane urządzenie: {device_info}")
 
             tqdm.write(f"Ładowanie modelu OpenAI Whisper {model_size}...")
             model = whisper.load_model(model_size)

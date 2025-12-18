@@ -1,0 +1,52 @@
+# version: "3.8"
+
+services:
+  transcribe:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: transcription-tool:latest
+    container_name: transcribe
+
+    # GPU configuration
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    # Volume mounts
+    volumes:
+      # Input/output data directory
+      - ./data:/data
+      # Whisper model cache (persistent)
+      - whisper-models:/models
+
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+
+    # Environment variables
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - HF_HOME=/models
+      - TORCH_HOME=/models
+      - PYTHONUNBUFFERED=1
+
+    # Working directory inside container
+    working_dir: /data
+
+    # Interactive mode for CLI
+    stdin_open: true
+    tty: true
+
+    # Restart policy
+    restart: "no"
+
+# Persistent volumes
+volumes:
+  whisper-models:
+    driver: local
