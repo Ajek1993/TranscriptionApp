@@ -24,13 +24,17 @@ Aplikacja pobiera audio z YouTube lub tworzy je z lokalnych plików wideo, przet
 - Automatyczne czyszczenie plików tymczasowych
 - Wsparcie dla wielu języków transkrypcji
 
+## Dokumentacja deweloperska
+
+- **[Dokumentacja wszystkich funkcji](README_FUNCTIONS.md)** - Szczegółowy opis wszystkich funkcji z kodu źródłowego `transcribe.py`, parametrów, wartości zwracanych i przykładów użycia
+
 ## Docker
 
 Aplikacja jest w pełni zdockeryzowana z automatycznym wsparciem GPU (CUDA 12.8) i fallback na CPU.
 
 ### Szybki start
 
-\`\`\`bash
+```bash
 # 1. Zbuduj obraz
 docker-compose build
 
@@ -39,33 +43,11 @@ docker-compose run --rm transcribe python -c "import torch; print('GPU:', torch.
 
 # 3. Użycie
 docker-compose run --rm transcribe "https://www.youtube.com/watch?v=VIDEO_ID"
-\`\`\`
-
-### Przykłady użycia Docker
-
-\`\`\`bash
-# Transkrypcja YouTube (GPU jeśli dostępne, inaczej CPU)
-docker-compose run --rm transcribe "https://youtube.com/watch?v=ID" --model base
-
-# Transkrypcja lokalnego pliku (plik musi być w ./data/)
-docker-compose run --rm transcribe --local /data/video.mp4
-
-# Dubbing z tłumaczeniem (angielski -> polski)
-docker-compose run --rm transcribe "URL" --language en --translate en-pl --dub
-
-# Wymuszone CPU (bez GPU)
-docker-compose run --rm -e CUDA_VISIBLE_DEVICES="" transcribe
-
-# Interaktywny shell do debugowania
-docker-compose run --rm --entrypoint bash transcribe
-
-# Pomoc
-docker-compose run --rm transcribe --help
-\`\`\`
+```
 
 ### Struktura katalogów Docker
 
-\`\`\`
+```
 PROJEKT_TRANSKRYPCJA/
 ├── data/                    # Pliki wejściowe/wyjściowe (volume mount)
 ├── Dockerfile
@@ -74,22 +56,24 @@ PROJEKT_TRANSKRYPCJA/
 ├── transcribe.py
 ├── requirements.txt
 └── README.md
-\`\`\`
+```
 
 ### Wymagania Docker
 
 **Windows (Docker Desktop + WSL2):**
+
 1. Windows 10/11 z WSL2
 2. NVIDIA GPU Driver >= 550.54 (dla CUDA 12.8)
 3. Docker Desktop z włączonym WSL2 backend
 
 **Weryfikacja:**
-\`\`\`bash
+```bash
 nvidia-smi
 docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu22.04 nvidia-smi
-\`\`\`
+```
 
 **Linux:**
+
 1. NVIDIA GPU Driver >= 550.54
 2. Docker Engine
 3. NVIDIA Container Toolkit
@@ -97,6 +81,7 @@ docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu22.04 nvidia-smi
 ### GPU/CPU Fallback
 
 Obraz automatycznie wykrywa dostępność GPU:
+
 - Jeśli GPU dostępne → używa CUDA z float16
 - Jeśli brak GPU → automatyczny fallback na CPU z int8
 
@@ -106,74 +91,327 @@ Obraz automatycznie wykrywa dostępność GPU:
 
 1. **Python 3.7+**
 2. **ffmpeg** - do przetwarzania audio
-   - Windows: \`winget install FFmpeg\` lub \`choco install ffmpeg\`
+   - Windows: `winget install FFmpeg` lub `choco install ffmpeg`
 3. **yt-dlp** - do pobierania z YouTube
-   - Instalacja: \`pip install yt-dlp\`
+   - Instalacja: `pip install yt-dlp`
 
 ### Instalacja
 
-\`\`\`bash
+```bash
 pip install -r requirements.txt
-\`\`\`
+```
 
 Dla GPU:
-\`\`\`bash
+```bash
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-\`\`\`
+```
 
-## Użycie
+## Przykłady użycia - Wszystkie funkcje
 
-### Podstawowe
+### 1. Podstawowa transkrypcja
 
-\`\`\`bash
-# YouTube
+**YouTube do SRT:**
+```bash
+# Docker
+docker-compose run --rm transcribe "https://www.youtube.com/watch?v=VIDEO_ID"
+
+# Natywnie
 python transcribe.py "https://www.youtube.com/watch?v=VIDEO_ID"
+```
 
-# Plik lokalny
+**Lokalny plik do SRT:**
+```bash
+# Docker (plik musi być w ./data/)
+docker-compose run --rm transcribe --local /data/video.mp4
+
+# Natywnie
 python transcribe.py --local "video.mp4"
-\`\`\`
+```
 
-### Dubbing TTS
+### 2. Pobieranie bez transkrypcji
 
-\`\`\`bash
-python transcribe.py "URL" --dub
-python transcribe.py --local "video.mp4" --dub --tts-voice pl-PL-ZofiaNeural
-\`\`\`
+**Pobierz tylko wideo:**
+```bash
+# Docker
+docker-compose run --rm transcribe --download "URL" --video-quality 1080
 
-### Tłumaczenie
+# Natywnie
+python transcribe.py --download "URL" --video-quality 1080
+# Dostępne jakości: 720, 1080, 1440, 2160
+```
 
-\`\`\`bash
+**Pobierz tylko audio (WAV):**
+```bash
+# Docker
+docker-compose run --rm transcribe --download-audio-only "URL"
+
+# Natywnie
+python transcribe.py --download-audio-only "URL"
+```
+
+### 3. Transkrypcja z tłumaczeniem
+
+**Angielski film → polskie napisy:**
+```bash
+# Docker
+docker-compose run --rm transcribe "URL" --language en --translate en-pl
+
+# Natywnie
 python transcribe.py "URL" --language en --translate en-pl
-\`\`\`
+```
 
-### Modele
+**Polski film → angielskie napisy:**
+```bash
+# Docker
+docker-compose run --rm transcribe --local /data/film.mp4 --language pl --translate pl-en
 
-\`\`\`bash
-python transcribe.py "URL" --model tiny    # najszybszy
-python transcribe.py "URL" --model base    # domyślny
-python transcribe.py "URL" --model medium  # dokładniejszy
-python transcribe.py "URL" --model large   # najdokładniejszy
-\`\`\`
+# Natywnie
+python transcribe.py --local "film.mp4" --language pl --translate pl-en
+```
+
+### 4. Dubbing TTS (Polish Voice-Over)
+
+**YouTube z polskim dubbingiem:**
+```bash
+# Docker
+docker-compose run --rm transcribe "URL" --dub
+
+# Natywnie
+python transcribe.py "URL" --dub
+# Wynik: VIDEO_ID.srt + VIDEO_ID_dubbed.mp4
+```
+
+**Lokalny plik z dubbingiem:**
+```bash
+# Docker
+docker-compose run --rm transcribe --local /data/video.mp4 --dub
+
+# Natywnie
+python transcribe.py --local "video.mp4" --dub
+# Wynik: video.srt + video_dubbed.mp4
+```
+
+**Tylko audio dubbing (bez wideo):**
+```bash
+# Docker
+docker-compose run --rm transcribe "URL" --dub-audio-only
+
+# Natywnie
+python transcribe.py "URL" --dub-audio-only
+# Wynik: VIDEO_ID.srt + VIDEO_ID_dubbed.wav
+```
+
+**Wybór głosu TTS:**
+```bash
+# Docker - męski głos (domyślny)
+docker-compose run --rm transcribe "URL" --dub --tts-voice pl-PL-MarekNeural
+
+# Docker - żeński głos
+docker-compose run --rm transcribe "URL" --dub --tts-voice pl-PL-ZofiaNeural
+
+# Natywnie
+python transcribe.py "URL" --dub --tts-voice pl-PL-ZofiaNeural
+```
+
+**Kontrola głośności:**
+```bash
+# Docker
+docker-compose run --rm transcribe "URL" --dub \
+  --original-volume 0.1 \
+  --tts-volume 1.2
+
+# Natywnie
+python transcribe.py "URL" --dub --original-volume 0.1 --tts-volume 1.2
+# original-volume: 0.0-1.0 (domyślnie 0.2 = 20%)
+# tts-volume: 0.0-2.0 (domyślnie 1.0 = 100%)
+```
+
+### 5. Angielski film → Polski dubbing (pełny workflow)
+
+```bash
+# Docker
+docker-compose run --rm transcribe "URL" \
+  --language en \
+  --translate en-pl \
+  --dub \
+  --tts-voice pl-PL-ZofiaNeural \
+  --original-volume 0.15
+
+# Natywnie
+python transcribe.py "URL" \
+  --language en \
+  --translate en-pl \
+  --dub \
+  --tts-voice pl-PL-ZofiaNeural \
+  --original-volume 0.15
+# Wynik: polskie napisy + wideo z polskim lektorem
+```
+
+### 6. Wgrywanie napisów do wideo (Hardcode Subtitles)
+
+**Lokalny plik z napisami:**
+```bash
+# Docker
+docker-compose run --rm transcribe --local /data/film.mp4 --burn-subtitles
+
+# Natywnie
+python transcribe.py --local "film.mp4" --burn-subtitles
+# Wynik: film.srt + film_subtitled.mp4
+```
+
+**YouTube z napisami:**
+```bash
+# Docker
+docker-compose run --rm transcribe "URL" --burn-subtitles
+
+# Natywnie
+python transcribe.py "URL" --burn-subtitles
+```
+
+**Własny styl napisów:**
+```bash
+# Docker - żółte napisy, większa czcionka
+docker-compose run --rm transcribe --local /data/film.mp4 --burn-subtitles \
+  --subtitle-style "FontName=Arial,FontSize=28,PrimaryColour=&H0000FFFF,BackColour=&H80000000"
+
+# Natywnie
+python transcribe.py --local "film.mp4" --burn-subtitles \
+  --subtitle-style "FontName=Arial,FontSize=28,PrimaryColour=&H0000FFFF"
+```
+
+### 7. Wybór modelu Whisper
+
+```bash
+# Docker - szybki model (najszybszy, mniej dokładny)
+docker-compose run --rm transcribe "URL" --model tiny
+
+# Docker - domyślny
+docker-compose run --rm transcribe "URL" --model base
+
+# Docker - dokładniejszy (wolniejszy)
+docker-compose run --rm transcribe "URL" --model medium
+
+# Docker - najdokładniejszy (bardzo wolny)
+docker-compose run --rm transcribe "URL" --model large
+
+# Natywnie
+python transcribe.py "URL" --model medium
+```
+
+### 8. Wybór silnika transkrypcji
+
+```bash
+# Docker - faster-whisper (domyślny, szybki)
+docker-compose run --rm transcribe "URL" --engine faster-whisper
+
+# Docker - openai-whisper (wolniejszy, może być dokładniejszy)
+docker-compose run --rm transcribe "URL" --engine whisper
+
+# Natywnie
+python transcribe.py "URL" --engine whisper
+```
+
+### 9. Wymuszone CPU (bez GPU)
+
+```bash
+# Docker - wyłącz GPU
+docker-compose run --rm -e CUDA_VISIBLE_DEVICES="" transcribe "URL"
+
+# Przydatne gdy GPU jest zajęte lub ma problemy
+```
+
+### 10. Zaawansowane opcje dubbingu
+
+**Kontrola segmentacji narratora:**
+```bash
+# Docker
+docker-compose run --rm transcribe "URL" --dub \
+  --max-segment-duration 8 \
+  --max-segment-words 12 \
+  --fill-gaps
+
+# Natywnie
+python transcribe.py "URL" --dub \
+  --max-segment-duration 8 \
+  --max-segment-words 12 \
+  --fill-gaps
+# Przydatne dla szybkiej mowy lub dialogów
+```
+
+### 11. Własne nazwy plików wyjściowych
+
+```bash
+# Docker - własna nazwa SRT
+docker-compose run --rm transcribe "URL" -o moja_transkrypcja.srt
+
+# Docker - własna nazwa dubbingu
+docker-compose run --rm transcribe "URL" --dub --dub-output moj_dubbing.mp4
+
+# Docker - własna nazwa subtitle burn
+docker-compose run --rm transcribe --local /data/film.mp4 --burn-subtitles \
+  --burn-output film_z_napisami.mp4
+
+# Natywnie
+python transcribe.py "URL" -o custom.srt
+python transcribe.py "URL" --dub --dub-output dubbed.mp4
+python transcribe.py --local "film.mp4" --burn-subtitles --burn-output output.mp4
+```
+
+### 12. Pomoc i debugowanie
+
+```bash
+# Docker - wyświetl wszystkie opcje
+docker-compose run --rm transcribe --help
+
+# Docker - interaktywny shell (debugowanie)
+docker-compose run --rm --entrypoint bash transcribe
+
+# Docker - test GPU
+docker-compose run --rm transcribe python -c "import torch; print('GPU:', torch.cuda.is_available())"
+```
+
+---
+
+## Szybkie Podsumowanie - Docker Compose
+
+| Funkcja | Komenda |
+|---------|---------|
+| **Podstawowa transkrypcja** | `docker-compose run --rm transcribe "URL"` |
+| **Lokalny plik** | `docker-compose run --rm transcribe --local /data/video.mp4` |
+| **Pobierz wideo** | `docker-compose run --rm transcribe --download "URL"` |
+| **Pobierz audio** | `docker-compose run --rm transcribe --download-audio-only "URL"` |
+| **Tłumaczenie** | `docker-compose run --rm transcribe "URL" --language en --translate en-pl` |
+| **Dubbing** | `docker-compose run --rm transcribe "URL" --dub` |
+| **Dubbing audio-only** | `docker-compose run --rm transcribe "URL" --dub-audio-only` |
+| **Wgraj napisy** | `docker-compose run --rm transcribe --local /data/video.mp4 --burn-subtitles` |
+| **Inny model** | `docker-compose run --rm transcribe "URL" --model medium` |
+| **Bez GPU** | `docker-compose run --rm -e CUDA_VISIBLE_DEVICES="" transcribe "URL"` |
+| **Pomoc** | `docker-compose run --rm transcribe --help` |
 
 ## Historia zmian
 
 ### v3.2 (Obecna)
+
 - Pełna dockeryzacja z CUDA 12.8 + cuDNN 9
 - Automatyczny GPU/CPU fallback w Docker
 - docker-compose dla łatwego uruchamiania
 
 ### v3.1
+
 - Wgrywanie napisów do wideo (--burn-subtitles)
 - Customizacja stylu napisów
 
 ### v3.0
+
 - Dubbing TTS z Microsoft Edge TTS
 - Pobieranie wideo z YouTube
 - Wybór silnika transkrypcji
 
 ### v2.0
+
 - Obsługa plików lokalnych
 - Tłumaczenie napisów
 
 ### v1.0
+
 - Pierwsza wersja
