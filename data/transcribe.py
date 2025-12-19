@@ -1212,6 +1212,28 @@ def _run_transcription_with_timeout(
     return False, "Unknown error during transcription", [], None
 
 
+# ===== PHASE 3: GPU MEMORY MONITORING =====
+
+WHISPER_MODEL_MEMORY_REQUIREMENTS = {
+    'tiny': 1, 'base': 1, 'small': 2, 'medium': 5, 'large': 10,
+    'large-v2': 10, 'large-v3': 10
+}
+
+
+def get_gpu_memory_info() -> str:
+    """Get GPU memory usage information."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            total_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            allocated = torch.cuda.memory_allocated(0) / (1024**3)
+            free = total_mem - allocated
+            return f"GPU Memory: {allocated:.2f}GB/{total_mem:.2f}GB ({free:.2f}GB free)"
+    except:
+        pass
+    return ""
+
+
 def detect_device() -> Tuple[str, str]:
     """Detect available device with cuDNN validation."""
     try:
@@ -2171,10 +2193,18 @@ def main():
                        help='Test generowania SRT z hardcoded danymi (developerski)')
     advanced_group.add_argument('--transcription-timeout', type=int, default=1800,
         help='Timeout per chunk in seconds (default: 1800 = 30 min, 0 = no timeout)')
+    advanced_group.add_argument('--debug', action='store_true',
+        help='Enable debug logging with detailed diagnostics')
 
 
 
     args = parser.parse_args()
+
+    # Configure debug mode (PHASE 3)
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.debug("Debug mode enabled")
+        logger.debug(f"Arguments: {vars(args)}")
 
     # Handle special modes
     if args.download:
