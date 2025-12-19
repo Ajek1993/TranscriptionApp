@@ -42,10 +42,11 @@ RUN pip install --no-cache-dir \
 
 # Install project dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && \
+    python -c "import ctranslate2; print('CTranslate2:', ctranslate2.__version__)"
 
 # Copy application code
-COPY transcribe.py .
+COPY data/transcribe.py .
 
 # Set environment variables for model cache
 ENV HF_HOME=/models

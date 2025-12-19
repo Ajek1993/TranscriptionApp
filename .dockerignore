@@ -11,5 +11,4 @@ specs/
 *.mov
 *.wav
 *.mp3
-data/
 models/

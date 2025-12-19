@@ -1124,21 +1124,24 @@ def get_audio_duration_ms(audio_path: str) -> Tuple[bool, int]:
 
 
 def detect_device() -> Tuple[str, str]:
-    """
-    Detect available device for faster-whisper (CUDA GPU or CPU).
-
-    Returns:
-        Tuple of (device: str, device_info: str)
-    """
+    """Detect available device with cuDNN validation."""
     try:
         import torch
         if torch.cuda.is_available():
             gpu_name = torch.cuda.get_device_name(0)
-            return "cuda", f"NVIDIA GPU ({gpu_name})"
+            cuda_version = torch.version.cuda
+            cudnn_version = torch.backends.cudnn.version()
+
+            if cudnn_version and cudnn_version >= 90000:  # cuDNN 9.x
+                device_info = f"NVIDIA GPU ({gpu_name}, CUDA {cuda_version}, cuDNN {cudnn_version // 1000}.{(cudnn_version % 1000) // 100})"
+                return "cuda", device_info
+            else:
+                tqdm.write(f"Warning: cuDNN {cudnn_version} too old. Need >=9.0 for CUDA 12.8. Falling back to CPU")
+                return "cpu", f"CPU (cuDNN incompatible: {cudnn_version})"
     except ImportError:
         pass
-    except Exception:
-        pass
+    except Exception as e:
+        tqdm.write(f"Warning: GPU detection failed: {e}")
 
     return "cpu", "CPU"
 
