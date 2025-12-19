@@ -8,9 +8,11 @@ services:
     image: transcription-tool:latest
     container_name: transcribe
 
-    # GPU configuration
+    # GPU configuration and resource limits
     deploy:
       resources:
+        limits:
+          memory: 16G
         reservations:
           devices:
             - driver: nvidia
