@@ -20,6 +20,9 @@ import time
 from pathlib import Path
 from typing import Tuple, List
 from tqdm import tqdm
+import threading
+import logging
+from queue import Queue
 
 # Supported video formats for local files
 SUPPORTED_VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov'}
@@ -39,6 +42,15 @@ try:
 except ImportError:
     EDGE_TTS_AVAILABLE = False
 
+
+# ===== LOGGING SETUP =====
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
 
 # ===== OUTPUT MANAGEMENT =====
 
@@ -476,7 +488,8 @@ def _transcribe_all_chunks(chunk_paths: List[str], args) -> Tuple[bool, str, Lis
                 model_size=args.model,
                 language=args.language,
                 engine=args.engine,
-                segment_progress_bar=segment_pbar
+                segment_progress_bar=segment_pbar,
+                timeout_seconds=args.transcription_timeout
             )
 
             # Close segment progress bar
@@ -1123,6 +1136,82 @@ def get_audio_duration_ms(audio_path: str) -> Tuple[bool, int]:
     return False, 0
 
 
+
+def _run_transcription_with_timeout(
+    model, audio_path: str, language: str,
+    timeout_seconds: int, segment_progress_bar, vad_parameters: dict
+) -> Tuple[bool, str, List[Tuple[int, int, str]], object]:
+    """Run model.transcribe() with timeout protection using threading."""
+    import time
+
+    if timeout_seconds <= 0:
+        # No timeout - run directly
+        segments_generator, info = model.transcribe(
+            audio_path, language=language, word_timestamps=True,
+            vad_filter=True, vad_parameters=vad_parameters
+        )
+        segments = []
+        for segment in segments_generator:
+            segments.append((int(segment.start * 1000), int(segment.end * 1000), segment.text.strip()))
+            if segment_progress_bar:
+                segment_progress_bar.set_postfix_str(f"{len(segments)} segments")
+        return True, "", segments, info
+
+    # Run with timeout
+    result_queue = Queue()
+    exception_queue = Queue()
+
+    def transcribe_thread():
+        try:
+            start_time = time.time()
+            last_log = start_time
+
+            segments_generator, info = model.transcribe(
+                audio_path, language=language, word_timestamps=True,
+                vad_filter=True, vad_parameters=vad_parameters
+            )
+
+            segments = []
+            for segment in segments_generator:
+                segments.append((int(segment.start * 1000), int(segment.end * 1000), segment.text.strip()))
+
+                # Log progress every 30 seconds
+                current_time = time.time()
+                elapsed = current_time - start_time
+                if current_time - last_log >= 30:
+                    tqdm.write(f"  Progress: {len(segments)} segments, {elapsed:.0f}s elapsed")
+                    last_log = current_time
+
+                if segment_progress_bar:
+                    segment_progress_bar.set_postfix_str(f"{len(segments)} seg, {elapsed:.0f}s")
+
+            result_queue.put(("success", segments, info))
+        except Exception as e:
+            exception_queue.put(e)
+
+    thread = threading.Thread(target=transcribe_thread, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout_seconds)
+
+    if thread.is_alive():
+        # Timeout occurred
+        error_msg = f"TIMEOUT: Transcription exceeded {timeout_seconds}s ({timeout_seconds/60:.1f} min)."
+        error_msg += "\nSolutions:"
+        error_msg += "\n  1. Use smaller model: --model base"
+        error_msg += f"\n  2. Increase timeout: --transcription-timeout {timeout_seconds * 2}"
+        error_msg += "\n  3. Disable timeout: --transcription-timeout 0"
+        return False, error_msg, [], None
+
+    if not exception_queue.empty():
+        raise exception_queue.get()
+
+    if not result_queue.empty():
+        status, segments, info = result_queue.get()
+        return True, "", segments, info
+
+    return False, "Unknown error during transcription", [], None
+
+
 def detect_device() -> Tuple[str, str]:
     """Detect available device with cuDNN validation."""
     try:
@@ -1147,7 +1236,8 @@ def detect_device() -> Tuple[str, str]:
 
 
 def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "pl",
-                     engine: str = "faster-whisper", segment_progress_bar: tqdm = None) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
+                     engine: str = "faster-whisper", segment_progress_bar: tqdm = None,
+                     timeout_seconds: int = 1800) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
     """
     Transcribe a WAV audio file using faster-whisper or OpenAI Whisper.
 
@@ -1195,34 +1285,26 @@ def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "p
             OutputManager.stage_header(1, "Transkrypcja")
             tqdm.write(f"\nTranskrypcja: {wav_file.name}...")
 
-            # Transcribe
-            segments_generator, info = model.transcribe(
-                str(wav_path),
-                language=language,
-                word_timestamps=True,
-                vad_filter=True,
-                vad_parameters=dict(
-                    threshold=0.5,
-                    min_speech_duration_ms=250,
-                    max_speech_duration_s=15,
-                    min_silence_duration_ms=500,
-                    speech_pad_ms=400
-                )
+            if timeout_seconds > 0:
+                tqdm.write(f"Timeout: {timeout_seconds}s ({timeout_seconds/60:.1f} min)")
+            else:
+                tqdm.write("Timeout: disabled")
+
+            vad_params = dict(
+                threshold=0.5, min_speech_duration_ms=250, max_speech_duration_s=15,
+                min_silence_duration_ms=500, speech_pad_ms=400
             )
 
-            tqdm.write(f"Wykryty język: {info.language} (prawdopodobieństwo: {info.language_probability:.2f})")
+            # Transcribe with timeout
+            success, error_msg, segments, info = _run_transcription_with_timeout(
+                model, str(wav_path), language, timeout_seconds, segment_progress_bar, vad_params
+            )
 
-            # Parse segments to list
-            for segment in segments_generator:
-                start_ms = int(segment.start * 1000)
-                end_ms = int(segment.end * 1000)
-                text = segment.text.strip()
-                segments.append((start_ms, end_ms, text))
+            if not success:
+                return False, error_msg, []
 
-                # Update progress bar if provided
-                if segment_progress_bar:
-                    segment_progress_bar.set_postfix_str(f"{len(segments)} segments")
-
+            if info:
+                tqdm.write(f"Wykryty język: {info.language} (prawdopodobieństwo: {info.language_probability:.2f})")
         elif engine == "whisper":
             try:
                 import whisper
@@ -2087,6 +2169,8 @@ def main():
                        help='Tylko transkrybuj chunki, nie generuj SRT (developerski)')
     advanced_group.add_argument('--test-merge', action='store_true',
                        help='Test generowania SRT z hardcoded danymi (developerski)')
+    advanced_group.add_argument('--transcription-timeout', type=int, default=1800,
+        help='Timeout per chunk in seconds (default: 1800 = 30 min, 0 = no timeout)')
 
 
 
