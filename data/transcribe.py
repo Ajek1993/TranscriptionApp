@@ -489,7 +489,13 @@ def _transcribe_all_chunks(chunk_paths: List[str], args) -> Tuple[bool, str, Lis
                 language=args.language,
                 engine=args.engine,
                 segment_progress_bar=segment_pbar,
-                timeout_seconds=args.transcription_timeout
+                timeout_seconds=args.transcription_timeout,
+                # WhisperX parameters
+                whisperx_align=getattr(args, 'whisperx_align', False),
+                whisperx_diarize=getattr(args, 'whisperx_diarize', False),
+                whisperx_min_speakers=getattr(args, 'whisperx_min_speakers', None),
+                whisperx_max_speakers=getattr(args, 'whisperx_max_speakers', None),
+                hf_token=getattr(args, 'hf_token', None)
             )
 
             # Close segment progress bar
@@ -1380,9 +1386,147 @@ def transcribe_with_faster_whisper(
     return True, f"Transkrypcja zakończona: {len(segments)} segmentów", segments
 
 
-def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "pl",
-                     engine: str = "whisper", segment_progress_bar: tqdm = None,
-                     timeout_seconds: int = 1800) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
+def transcribe_with_whisperx(
+    wav_path: str,
+    model_size: str,
+    language: str,
+    segment_progress_bar: tqdm,
+    timeout_seconds: int,
+    align: bool = False,
+    diarize: bool = False,
+    min_speakers: int = None,
+    max_speakers: int = None,
+    hf_token: str = None
+) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
+    """
+    Transkrypcja z WhisperX (GPU/CPU, alignment, diarization).
+
+    WhisperX oferuje:
+    - Lepszą dokładność timestampów
+    - Word-level alignment
+    - Speaker diarization (rozpoznawanie mówców)
+    """
+    try:
+        import whisperx
+        import torch
+    except ImportError:
+        return False, "Błąd: whisperx nie jest zainstalowany. Zainstaluj: pip install whisperx", []
+
+    # Detekcja urządzenia
+    device, device_info = detect_device()
+    tqdm.write(f"Używane urządzenie: {device_info}")
+
+    # Compute type
+    compute_type = "float16" if device == "cuda" else "int8"
+
+    # Ładowanie modelu
+    tqdm.write(f"Ładowanie modelu WhisperX {model_size}...")
+    try:
+        model = whisperx.load_model(
+            model_size,
+            device=device,
+            compute_type=compute_type,
+            language=language
+        )
+    except Exception as e:
+        if device == "cuda":
+            tqdm.write(f"Ostrzeżenie: Nie można użyć GPU, przełączam na CPU. Błąd: {e}")
+            device = "cpu"
+            compute_type = "int8"
+            model = whisperx.load_model(model_size, device="cpu", compute_type="int8")
+        else:
+            return False, f"Błąd podczas ładowania modelu WhisperX: {str(e)}", []
+
+    # Transkrypcja
+    OutputManager.stage_header(1, "Transkrypcja")
+    tqdm.write(f"\nTranskrypcja WhisperX: {Path(wav_path).name}...")
+
+    # Załaduj audio
+    try:
+        audio = whisperx.load_audio(str(wav_path))
+    except Exception as e:
+        return False, f"Błąd podczas ładowania audio: {str(e)}", []
+
+    # Transkrypcja
+    try:
+        result = model.transcribe(audio, batch_size=16)
+    except Exception as e:
+        return False, f"Błąd podczas transkrypcji WhisperX: {str(e)}", []
+
+    # Word-level alignment (opcjonalnie)
+    if align:
+        tqdm.write("Wykonywanie word-level alignment...")
+        try:
+            model_a, metadata = whisperx.load_align_model(
+                language_code=language,
+                device=device
+            )
+            result = whisperx.align(
+                result["segments"],
+                model_a,
+                metadata,
+                audio,
+                device,
+                return_char_alignments=False
+            )
+        except Exception as e:
+            tqdm.write(f"Ostrzeżenie: Alignment nie powiódł się: {e}")
+
+    # Speaker diarization (opcjonalnie)
+    if diarize:
+        if not hf_token:
+            tqdm.write("Ostrzeżenie: Speaker diarization wymaga HuggingFace token (--hf-token)")
+        else:
+            tqdm.write("Wykonywanie speaker diarization...")
+            try:
+                diarize_model = whisperx.DiarizationPipeline(
+                    use_auth_token=hf_token,
+                    device=device
+                )
+                diarize_segments = diarize_model(
+                    audio,
+                    min_speakers=min_speakers,
+                    max_speakers=max_speakers
+                )
+                result = whisperx.assign_word_speakers(diarize_segments, result)
+            except Exception as e:
+                tqdm.write(f"Ostrzeżenie: Diarization nie powiódł się: {e}")
+
+    # Konwersja segmentów do formatu (start_ms, end_ms, text)
+    segments = []
+    for segment in result.get("segments", []):
+        start_ms = int(segment["start"] * 1000)
+        end_ms = int(segment["end"] * 1000)
+        text = segment["text"].strip()
+
+        # Dodaj speaker info jeśli dostępne
+        if "speaker" in segment:
+            text = f"[{segment['speaker']}] {text}"
+
+        segments.append((start_ms, end_ms, text))
+
+        if segment_progress_bar:
+            segment_progress_bar.set_postfix_str(f"{len(segments)} segments")
+
+    tqdm.write(f"Wykryty język: {result.get('language', language)}")
+
+    return True, f"Transkrypcja zakończona: {len(segments)} segmentów", segments
+
+
+def transcribe_chunk(
+    wav_path: str,
+    model_size: str = "base",
+    language: str = "pl",
+    engine: str = "whisper",
+    segment_progress_bar: tqdm = None,
+    timeout_seconds: int = 1800,
+    # WhisperX options
+    whisperx_align: bool = False,
+    whisperx_diarize: bool = False,
+    whisperx_min_speakers: int = None,
+    whisperx_max_speakers: int = None,
+    hf_token: str = None
+) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
     """
     Transkrypcja pliku WAV przy użyciu wybranego silnika.
 
@@ -1393,6 +1537,11 @@ def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "p
         engine: Silnik transkrypcji ('whisper', 'faster-whisper', 'whisperx')
         segment_progress_bar: Progress bar dla segmentów
         timeout_seconds: Timeout dla transkrypcji (0 = bez limitu)
+        whisperx_align: Włącz word-level alignment (tylko WhisperX)
+        whisperx_diarize: Włącz speaker diarization (tylko WhisperX)
+        whisperx_min_speakers: Min liczba mówców (tylko WhisperX)
+        whisperx_max_speakers: Max liczba mówców (tylko WhisperX)
+        hf_token: HuggingFace token (tylko WhisperX diarization)
 
     Returns:
         Tuple (success: bool, message: str, segments: List[(start_ms, end_ms, text)])
@@ -1417,7 +1566,15 @@ def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "p
             )
 
         elif engine == "whisperx":
-            return False, "Błąd: WhisperX nie jest jeszcze zaimplementowany (KROK 2)", []
+            return transcribe_with_whisperx(
+                wav_path, model_size, language,
+                segment_progress_bar, timeout_seconds,
+                align=whisperx_align,
+                diarize=whisperx_diarize,
+                min_speakers=whisperx_min_speakers,
+                max_speakers=whisperx_max_speakers,
+                hf_token=hf_token
+            )
 
         else:
             return False, f"Błąd: Nieobsługiwany silnik transkrypcji: {engine}", []
@@ -2195,6 +2352,24 @@ def main():
                    help='Silnik transkrypcji (domyślnie: whisper)')
     transcription_group.add_argument('-t', '--translate', type=str, choices=['pl-en', 'en-pl'],
                        help='Tłumaczenie (pl-en: polski->angielski, en-pl: angielski->polski)')
+
+    # ===== OPCJE WHISPERX =====
+    whisperx_group = parser.add_argument_group('Opcje WhisperX', 'Zaawansowane funkcje dla silnika WhisperX')
+
+    whisperx_group.add_argument('--whisperx-align', action='store_true',
+                       help='Włącz word-level alignment (dokładniejsze timestampy)')
+
+    whisperx_group.add_argument('--whisperx-diarize', action='store_true',
+                       help='Włącz speaker diarization (rozpoznawanie mówców)')
+
+    whisperx_group.add_argument('--whisperx-min-speakers', type=int, default=None,
+                       help='Minimalna liczba mówców (dla diarization)')
+
+    whisperx_group.add_argument('--whisperx-max-speakers', type=int, default=None,
+                       help='Maksymalna liczba mówców (dla diarization)')
+
+    whisperx_group.add_argument('--hf-token', type=str, default=None,
+                       help='HuggingFace token (wymagany dla diarization)')
 
     # ===== OPCJE DUBBINGU I NAPISÓW =====
     dubbing_group = parser.add_argument_group('Opcje dubbingu i napisów', 'Konfiguracja TTS i wgrywania napisów do wideo')
