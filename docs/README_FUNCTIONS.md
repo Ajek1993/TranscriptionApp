@@ -477,15 +477,14 @@ Pobiera informacje o pamięci GPU.
 **Metoda:**
 - Używa PyTorch do sprawdzenia CUDA memory
 
-### transcribe_chunk(wav_path, model_size, language, engine, segment_progress_bar, timeout_seconds) → Tuple[bool, str, List[Tuple[int, int, str]]]
+### transcribe_with_whisper(wav_path, model_size, language, segment_progress_bar, timeout_seconds) → Tuple[bool, str, List[Tuple[int, int, str]]]
 
-Transkrybuje pojedynczy fragment audio.
+Transkrybuje audio przy użyciu OpenAI Whisper.
 
 **Parametry:**
 - `wav_path` - Ścieżka do pliku WAV
 - `model_size` - Rozmiar modelu Whisper (tiny/base/small/medium/large)
 - `language` - Język transkrypcji (pl, en, etc.)
-- `engine` - Silnik transkrypcji (faster-whisper, whisper)
 - `segment_progress_bar` - Progress bar dla segmentów
 - `timeout_seconds` - Timeout w sekundach (0 = brak timeoutu)
 
@@ -493,15 +492,123 @@ Transkrybuje pojedynczy fragment audio.
 - Tuple (success, error_msg, segments)
 
 **Funkcjonalność:**
-- Automatyczne wykrywanie GPU/CPU
-- Timeout handling z przerwaniem procesu
+- Automatyczne wykrywanie GPU/CUDA
+- Fallback na CPU jeśli GPU niedostępne
+- Timeout handling
 - Progress tracking
-- Podział długich segmentów
-- Wypełnianie luk czasowych
+- Optymalizuje dla GPU z float16
 
-**Silniki:**
-- `faster-whisper`: Szybszy, mniejsze zużycie pamięci
-- `whisper`: Oryginalny OpenAI, może być dokładniejszy
+**Zalety:**
+- Szybki (GPU-accelerated)
+- Dobra jakość
+- Wbudowany fallback na CPU
+
+### transcribe_with_faster_whisper(wav_path, model_size, language, segment_progress_bar, timeout_seconds) → Tuple[bool, str, List[Tuple[int, int, str]]]
+
+Transkrybuje audio przy użyciu Faster-Whisper (CPU-only).
+
+**Parametry:**
+- `wav_path` - Ścieżka do pliku WAV
+- `model_size` - Rozmiar modelu (tiny/base/small/medium/large)
+- `language` - Język transkrypcji (pl, en, etc.)
+- `segment_progress_bar` - Progress bar dla segmentów
+- `timeout_seconds` - Timeout w sekundach (0 = brak timeoutu)
+
+**Zwraca:**
+- Tuple (success, error_msg, segments)
+
+**Funkcjonalność:**
+- Wymuszony CPU (bez CUDA)
+- Timeout handling
+- Progress tracking
+- Optymalizuje dla CPU z int8
+
+**Zalety:**
+- Działa bez GPU
+- Mniejsze zużycie pamięci
+
+**Wady:**
+- Wolniejszy niż Whisper
+- Wymaga więcej czasu obliczeniowego
+
+### transcribe_with_whisperx(wav_path, model_size, language, segment_progress_bar, timeout_seconds, align=False, diarize=False, min_speakers=None, max_speakers=None, hf_token=None) → Tuple[bool, str, List[Tuple[int, int, str]]]
+
+Transkrybuje audio przy użyciu WhisperX (zaawansowany).
+
+**Parametry:**
+- `wav_path` - Ścieżka do pliku WAV
+- `model_size` - Rozmiar modelu (tiny/base/small/medium/large)
+- `language` - Język transkrypcji (pl, en, etc.)
+- `segment_progress_bar` - Progress bar dla segmentów
+- `timeout_seconds` - Timeout w sekundach (0 = brak timeoutu)
+- `align` - Włączaj word-level alignment (domyślnie False)
+- `diarize` - Włączaj speaker diarization (domyślnie False)
+- `min_speakers` - Minimalna liczba mówców (opcjonalnie)
+- `max_speakers` - Maksymalna liczba mówców (opcjonalnie)
+- `hf_token` - HuggingFace token dla diarization (opcjonalnie)
+
+**Zwraca:**
+- Tuple (success, error_msg, segments)
+
+**Funkcjonalność:**
+- Automatyczne wykrywanie GPU/CUDA
+- Word-level alignment (dokładne timestampy)
+- Speaker diarization (rozpoznawanie mówców)
+- Timeout handling
+- Progress tracking
+- Fallback na CPU jeśli GPU niedostępne
+
+**Zaawansowane opcje:**
+- `--whisperx-align`: Włącza dokładne timestampy na poziomie słów
+- `--whisperx-diarize`: Włącza rozpoznawanie mówców (wymaga HF token)
+- `--whisperx-min-speakers`, `--whisperx-max-speakers`: Ograniczenia liczby mówców
+
+**Zalety:**
+- Najdokładniejsze timestampy
+- Speaker diarization
+- Najwyższa jakość
+- Automatyczne GPU/CPU
+
+**Wady:**
+- Wolniejszy niż Whisper
+- Diarization wymaga HuggingFace token
+
+### transcribe_chunk(wav_path, model_size, language, engine, segment_progress_bar, timeout_seconds, whisperx_align=False, whisperx_diarize=False, whisperx_min_speakers=None, whisperx_max_speakers=None, hf_token=None) → Tuple[bool, str, List[Tuple[int, int, str]]]
+
+Transkrybuje pojedynczy fragment audio (dispatcher do silników).
+
+**Parametry:**
+- `wav_path` - Ścieżka do pliku WAV
+- `model_size` - Rozmiar modelu (tiny/base/small/medium/large)
+- `language` - Język transkrypcji (pl, en, etc.)
+- `engine` - Silnik transkrypcji (whisper, faster-whisper, whisperx)
+- `segment_progress_bar` - Progress bar dla segmentów
+- `timeout_seconds` - Timeout w sekundach (0 = brak timeoutu)
+- `whisperx_align` - Włącz word-level alignment (tylko WhisperX)
+- `whisperx_diarize` - Włącz speaker diarization (tylko WhisperX)
+- `whisperx_min_speakers` - Minimalna liczba mówców (opcjonalnie)
+- `whisperx_max_speakers` - Maksymalna liczba mówców (opcjonalnie)
+- `hf_token` - HuggingFace token (opcjonalnie)
+
+**Zwraca:**
+- Tuple (success, error_msg, segments)
+
+**Funkcjonalność (Dispatcher):**
+- Wybiera odpowiedni silnik transkrypcji na podstawie `engine`
+- Kieruje parametry do engine-specific funkcji
+- `whisper` → transcribe_with_whisper()
+- `faster-whisper` → transcribe_with_faster_whisper()
+- `whisperx` → transcribe_with_whisperx()
+- Wspólne dla wszystkich silników: timeout handling, progress tracking
+
+**Silniki dostępne:**
+- `whisper` (domyślny): GPU-accelerated, szybki, dobra jakość
+- `faster-whisper`: CPU-only, wolniejszy, brak GPU
+- `whisperx`: Zaawansowany, najdokładniejsze timestampy, speaker diarization
+
+**Backward compatibility:**
+- Domyślnie używa `whisper` jeśli `engine` nie podany
+- WhisperX parametry są opcjonalne (ignorowane dla innych silników)
 
 ## Segment Processing
 

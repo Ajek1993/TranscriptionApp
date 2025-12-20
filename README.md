@@ -4,7 +4,7 @@ Narzędzie do automatycznej transkrypcji filmów z YouTube lub lokalnych plików
 
 ## Opis
 
-Aplikacja pobiera audio z YouTube lub tworzy je z lokalnych plików wideo, przetwarza je i generuje plik napisów SRT z wykorzystaniem modelem Whisper (faster-whisper). Wspiera długie materiały audio poprzez automatyczny podział na fragmenty oraz opcjonalne tłumaczenie między polskim a angielskim. Nowa funkcjonalność dubbingu TTS pozwala na wygenerowanie polskiej ścieżki audio z synchronizacją czasową i mixowaniem z oryginalnym dźwiękiem.
+Aplikacja pobiera audio z YouTube lub tworzy je z lokalnych plików wideo, przetwarza je i generuje plik napisów SRT z wykorzystaniem modelu Whisper. Wspiera trzy silniki transkrypcji: OpenAI Whisper (domyślny, GPU), Faster-Whisper (CPU) i WhisperX (zaawansowany z alignmentem i diaryzacją). Wspiera długie materiały audio poprzez automatyczny podział na fragmenty oraz opcjonalne tłumaczenie między polskim a angielskim. Nowa funkcjonalność dubbingu TTS pozwala na wygenerowanie polskiej ścieżki audio z synchronizacją czasową i mixowaniem z oryginalnym dźwiękiem.
 
 ## Funkcje
 
@@ -13,8 +13,8 @@ Aplikacja pobiera audio z YouTube lub tworzy je z lokalnych plików wideo, przet
 - **Transkrypcja z plików lokalnych**: Obsługa MP4, MKV, AVI, MOV
 - **Dubbing TTS**: Generowanie dubbingu z Microsoft Edge TTS (polskie i angielskie głosy)
 - **Wgrywanie napisów do wideo**: Hardcode subtitles z customizacją stylu (białe napisy, ciemne tło)
-- **Wybór silnika transkrypcji**: faster-whisper (szybki) lub openai-whisper (dokładny)
-- **Docker**: Pełna dockeryzacja z CUDA 12.8 i GPU/CPU fallback
+- **Wybór silnika transkrypcji**: OpenAI Whisper (domyślny), Faster-Whisper (CPU), WhisperX (zaawansowany)
+- **Docker**: Pełna dockeryzacja z CUDA 12.4 + cuDNN 9 i GPU/CPU fallback
 - Automatyczny podział długich nagrań na fragmenty (~30 minut)
 - Transkrypcja z wykorzystaniem modelu Whisper (pl, en, i inne języki)
 - Tłumaczenie napisów: polski ↔ angielski (deep-translator + Google Translate)
@@ -30,7 +30,7 @@ Aplikacja pobiera audio z YouTube lub tworzy je z lokalnych plików wideo, przet
 
 ## Docker
 
-Aplikacja jest w pełni zdockeryzowana z automatycznym wsparciem GPU (CUDA 12.8) i fallback na CPU.
+Aplikacja jest w pełni zdockeryzowana z automatycznym wsparciem GPU (CUDA 12.4 + cuDNN 9) i fallback na CPU.
 
 ### Szybki start
 
@@ -63,13 +63,13 @@ PROJEKT_TRANSKRYPCJA/
 **Windows (Docker Desktop + WSL2):**
 
 1. Windows 10/11 z WSL2
-2. NVIDIA GPU Driver >= 550.54 (dla CUDA 12.8)
+2. NVIDIA GPU Driver >= 550.54 (dla CUDA 12.4)
 3. Docker Desktop z włączonym WSL2 backend
 
 **Weryfikacja:**
 ```bash
 nvidia-smi
-docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu22.04 nvidia-smi
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
 
 **Linux:**
@@ -298,14 +298,94 @@ docker-compose run --rm transcribe "URL" --model large
 python transcribe.py "URL" --model medium
 ```
 
-### 8. Wybór silnika transkrypcji
+## Silniki transkrypcji
+
+Aplikacja obsługuje trzy silniki transkrypcji:
+
+### 1. OpenAI Whisper (domyślny)
+- **Użycie:** `--engine whisper`
+- **Urządzenie:** Automatycznie GPU/CUDA jeśli dostępne
+- **Zalety:** Szybki, dobra jakość, najprostszy w użyciu
+- **Wady:** Podstawowe timestampy
+
+**Użycie (domyślnie):**
+```bash
+# Docker
+docker-compose run --rm transcribe "URL" --model base
+
+# Natywnie
+python transcribe.py "URL" --model base
+```
+
+### 2. Faster-Whisper (CPU)
+- **Użycie:** `--engine faster-whisper`
+- **Urządzenie:** Wymuszony CPU
+- **Zalety:** Działa bez GPU
+- **Wady:** Wolniejszy, wymaga więcej czasu
+
+**Użycie:**
+```bash
+# Docker
+docker-compose run --rm transcribe "URL" --engine faster-whisper --model base
+
+# Natywnie
+python transcribe.py "URL" --engine faster-whisper --model base
+```
+
+### 3. WhisperX (zaawansowany)
+- **Użycie:** `--engine whisperx`
+- **Urządzenie:** Automatycznie GPU/CUDA jeśli dostępne
+- **Zalety:**
+  - Najlepsze timestampy (word-level alignment)
+  - Speaker diarization (rozpoznawanie mówców)
+  - Wysoką dokładność
+- **Wady:** Wolniejszy niż Whisper
+
+**Podstawowe użycie:**
+```bash
+# Docker
+docker-compose run --rm transcribe "URL" --engine whisperx --model base
+
+# Natywnie
+python transcribe.py "URL" --engine whisperx --model base
+```
+
+**Z word-level alignment:**
+```bash
+# Docker
+docker-compose run --rm transcribe "URL" --engine whisperx --model base --whisperx-align
+
+# Natywnie
+python transcribe.py "URL" --engine whisperx --model base --whisperx-align
+```
+
+**Z speaker diarization:**
+```bash
+# Docker
+docker-compose run --rm transcribe "URL" --engine whisperx --model base \
+  --whisperx-diarize --hf-token YOUR_HF_TOKEN --whisperx-min-speakers 2
+
+# Natywnie
+python transcribe.py "URL" --engine whisperx --model base \
+  --whisperx-diarize --hf-token YOUR_HF_TOKEN --whisperx-min-speakers 2
+```
+
+**Porównanie silników:**
+
+| Silnik | Szybkość | Jakość timestampów | GPU | Diarization |
+|--------|----------|-------------------|-----|-------------|
+| whisper | ⚡⚡⚡⚡ | ⭐⭐⭐ | ✅ Auto | ❌ |
+| faster-whisper | ⚡⚡ | ⭐⭐⭐ | ❌ CPU only | ❌ |
+| whisperx | ⚡⚡⚡ | ⭐⭐⭐⭐⭐ | ✅ Auto | ✅ |
+
+### 8. Starsze opcje silnika transkrypcji
 
 ```bash
-# Docker - faster-whisper (domyślny, szybki)
-docker-compose run --rm transcribe "URL" --engine faster-whisper
-
-# Docker - openai-whisper (wolniejszy, może być dokładniejszy)
+# Docker - openai-whisper (domyślny)
 docker-compose run --rm transcribe "URL" --engine whisper
+
+# Docker - faster-whisper (CPU fallback)
+docker-compose run --rm transcribe "URL" --engine faster-whisper
 
 # Natywnie
 python transcribe.py "URL" --engine whisper
@@ -390,7 +470,17 @@ docker-compose run --rm transcribe python -c "import torch; print('GPU:', torch.
 
 ## Historia zmian
 
-### v3.2 (Obecna)
+### v4.0 (Obecna)
+
+- Trzy silniki transkrypcji: OpenAI Whisper (domyślny), Faster-Whisper (CPU), WhisperX (zaawansowany)
+- Zmiana domyślnego silnika z faster-whisper na whisper (szybszy GPU support)
+- WhisperX z word-level alignment i speaker diarization
+- Refaktoryzacja transcribe_chunk() jako dispatcher do silników
+- Dockerfile zoptymalizowany: zmiana z devel (8-10GB) na runtime (3-4GB)
+- Usunięcie ctranslate2 z zależności (faster-whisper teraz CPU-only)
+- CUDA 12.4 + cuDNN 9 Runtime (zamiast 12.8 devel)
+
+### v3.2
 
 - Pełna dockeryzacja z CUDA 12.8 + cuDNN 9
 - Automatyczny GPU/CPU fallback w Docker
