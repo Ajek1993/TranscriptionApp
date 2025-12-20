@@ -1257,113 +1257,170 @@ def detect_device() -> Tuple[str, str]:
     return "cpu", "CPU"
 
 
-def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "pl",
-                     engine: str = "faster-whisper", segment_progress_bar: tqdm = None,
-                     timeout_seconds: int = 1800) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
+def transcribe_with_whisper(
+    wav_path: str,
+    model_size: str,
+    language: str,
+    segment_progress_bar: tqdm,
+    timeout_seconds: int
+) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
     """
-    Transcribe a WAV audio file using faster-whisper or OpenAI Whisper.
+    Transkrypcja z OpenAI Whisper (automatyczne GPU/CUDA).
 
-    Args:
-        wav_path: Path to the WAV file
-        model_size: Model size to use (tiny, base, small, medium, large)
-        language: Language code (default: pl for Polish)
-        engine: Transcription engine ('faster-whisper' or 'whisper')
-        segment_progress_bar: Optional tqdm progress bar for segment updates
-
-    Returns:
-        Tuple of (success: bool, message: str, segments: List[(start_ms, end_ms, text)])
+    Whisper automatycznie wykorzystuje GPU jeśli dostępne.
     """
     try:
-        # Check if file exists
+        import whisper
+    except ImportError:
+        return False, "Błąd: whisper nie jest zainstalowany. Zainstaluj: pip install openai-whisper", []
+
+    # Detekcja urządzenia (GPU preferred)
+    device, device_info = detect_device()
+    tqdm.write(f"Używane urządzenie: {device_info}")
+
+    # Ładowanie modelu
+    tqdm.write(f"Ładowanie modelu OpenAI Whisper {model_size}...")
+    try:
+        model = whisper.load_model(model_size, device=device)
+    except Exception as e:
+        if device == "cuda":
+            tqdm.write(f"Ostrzeżenie: Nie można użyć GPU, przełączam na CPU. Błąd: {e}")
+            device = "cpu"
+            model = whisper.load_model(model_size, device="cpu")
+        else:
+            return False, f"Błąd podczas ładowania modelu whisper: {str(e)}", []
+
+    # Transkrypcja
+    OutputManager.stage_header(1, "Transkrypcja")
+    tqdm.write(f"\nTranskrypcja: {Path(wav_path).name}...")
+
+    # OpenAI Whisper nie używa timeout wrapper (prostsza implementacja)
+    try:
+        result = model.transcribe(
+            str(wav_path),
+            language=language,
+            word_timestamps=True,
+            verbose=False,
+            fp16=(device == "cuda")
+        )
+    except Exception as e:
+        return False, f"Błąd podczas transkrypcji: {str(e)}", []
+
+    # Parsowanie segmentów
+    segments = []
+    for segment in result["segments"]:
+        start_ms = int(segment["start"] * 1000)
+        end_ms = int(segment["end"] * 1000)
+        text = segment["text"].strip()
+        segments.append((start_ms, end_ms, text))
+
+        if segment_progress_bar:
+            segment_progress_bar.set_postfix_str(f"{len(segments)} segments")
+
+    tqdm.write(f"Wykryty język: {result['language']}")
+
+    return True, f"Transkrypcja zakończona: {len(segments)} segmentów", segments
+
+
+def transcribe_with_faster_whisper(
+    wav_path: str,
+    model_size: str,
+    language: str,
+    segment_progress_bar: tqdm,
+    timeout_seconds: int
+) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
+    """
+    Transkrypcja z Faster-Whisper (zawsze CPU).
+
+    Faster-Whisper wymusza użycie CPU ze względu na problemy z CTranslate2.
+    """
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        return False, "Błąd: faster-whisper nie jest zainstalowany. Zainstaluj: pip install faster-whisper", []
+
+    # WYMUSZENIE CPU dla Faster-Whisper
+    device = "cpu"
+    device_info = "CPU (faster-whisper - wymuszony CPU)"
+    tqdm.write(f"Używane urządzenie: {device_info}")
+    tqdm.write("  INFO: Faster-Whisper używa CPU ze względu na kompatybilność CTranslate2")
+
+    # Inicjalizacja modelu (zawsze CPU)
+    tqdm.write(f"Ładowanie modelu {model_size}...")
+    try:
+        model = WhisperModel(model_size, device="cpu", compute_type="int8")
+    except Exception as e:
+        return False, f"Błąd podczas ładowania modelu faster-whisper: {str(e)}", []
+
+    # Transkrypcja
+    OutputManager.stage_header(1, "Transkrypcja")
+    tqdm.write(f"\nTranskrypcja: {Path(wav_path).name}...")
+
+    if timeout_seconds > 0:
+        tqdm.write(f"Timeout: {timeout_seconds}s ({timeout_seconds/60:.1f} min)")
+    else:
+        tqdm.write("Timeout: disabled")
+
+    vad_params = dict(
+        threshold=0.5, min_speech_duration_ms=250, max_speech_duration_s=15,
+        min_silence_duration_ms=500, speech_pad_ms=400
+    )
+
+    # Transcribe with timeout
+    success, error_msg, segments, info = _run_transcription_with_timeout(
+        model, str(wav_path), language, timeout_seconds, segment_progress_bar, vad_params
+    )
+
+    if not success:
+        return False, error_msg, []
+
+    if info:
+        tqdm.write(f"Wykryty język: {info.language} (prawdopodobieństwo: {info.language_probability:.2f})")
+
+    return True, f"Transkrypcja zakończona: {len(segments)} segmentów", segments
+
+
+def transcribe_chunk(wav_path: str, model_size: str = "base", language: str = "pl",
+                     engine: str = "whisper", segment_progress_bar: tqdm = None,
+                     timeout_seconds: int = 1800) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
+    """
+    Transkrypcja pliku WAV przy użyciu wybranego silnika.
+
+    Args:
+        wav_path: Ścieżka do pliku WAV
+        model_size: Rozmiar modelu (tiny, base, small, medium, large)
+        language: Kod języka (pl, en, etc.)
+        engine: Silnik transkrypcji ('whisper', 'faster-whisper', 'whisperx')
+        segment_progress_bar: Progress bar dla segmentów
+        timeout_seconds: Timeout dla transkrypcji (0 = bez limitu)
+
+    Returns:
+        Tuple (success: bool, message: str, segments: List[(start_ms, end_ms, text)])
+    """
+    try:
+        # Sprawdź czy plik istnieje
         wav_file = Path(wav_path)
         if not wav_file.exists():
             return False, f"Błąd: Plik audio nie istnieje: {wav_path}", []
 
-        segments = []
-
-        if engine == "faster-whisper":
-            try:
-                from faster_whisper import WhisperModel
-            except ImportError:
-                return False, "Błąd: faster-whisper nie jest zainstalowany. Zainstaluj: pip install faster-whisper", []
-
-            # Detect device
-            device, device_info = detect_device()
-            tqdm.write(f"Używane urządzenie: {device_info}")
-
-            # Initialize model
-            tqdm.write(f"Ładowanie modelu {model_size}...")
-            try:
-                model = WhisperModel(model_size, device=device, compute_type="float16" if device == "cuda" else "int8")
-            except Exception as e:
-                if "CUDA" in str(e) or "GPU" in str(e):
-                    tqdm.write(f"Ostrzeżenie: Nie można użyć GPU, przełączam na CPU. Błąd: {e}")
-                    device = "cpu"
-                    device_info = "CPU (fallback)"
-                    model = WhisperModel(model_size, device=device, compute_type="int8")
-                else:
-                    raise
-
-            OutputManager.stage_header(1, "Transkrypcja")
-            tqdm.write(f"\nTranskrypcja: {wav_file.name}...")
-
-            if timeout_seconds > 0:
-                tqdm.write(f"Timeout: {timeout_seconds}s ({timeout_seconds/60:.1f} min)")
-            else:
-                tqdm.write("Timeout: disabled")
-
-            vad_params = dict(
-                threshold=0.5, min_speech_duration_ms=250, max_speech_duration_s=15,
-                min_silence_duration_ms=500, speech_pad_ms=400
+        # Wybór silnika transkrypcji
+        if engine == "whisper":
+            return transcribe_with_whisper(
+                wav_path, model_size, language,
+                segment_progress_bar, timeout_seconds
             )
 
-            # Transcribe with timeout
-            success, error_msg, segments, info = _run_transcription_with_timeout(
-                model, str(wav_path), language, timeout_seconds, segment_progress_bar, vad_params
+        elif engine == "faster-whisper":
+            return transcribe_with_faster_whisper(
+                wav_path, model_size, language,
+                segment_progress_bar, timeout_seconds
             )
 
-            if not success:
-                return False, error_msg, []
-
-            if info:
-                tqdm.write(f"Wykryty język: {info.language} (prawdopodobieństwo: {info.language_probability:.2f})")
-        elif engine == "whisper":
-            try:
-                import whisper
-            except ImportError:
-                return False, "Błąd: whisper nie jest zainstalowany. Zainstaluj: pip install openai-whisper", []
-            
-            # Detect device
-            device, device_info = detect_device()
-            tqdm.write(f"Używane urządzenie: {device_info}")
-
-            tqdm.write(f"Ładowanie modelu OpenAI Whisper {model_size}...")
-            model = whisper.load_model(model_size)
-            
-            tqdm.write(f"\n=== Etap 1: Transkrypcja: {wav_file.name}... ===")
-            
-            device, _ = detect_device()
-            result = model.transcribe(str(wav_path), language=language, word_timestamps=True, verbose=False, fp16=(device == "cuda"))
-
-            # Parsowanie słownika result["segments"]
-            for segment in result["segments"]:
-                start_ms = int(segment["start"] * 1000)
-                end_ms = int(segment["end"] * 1000)
-                text = segment["text"].strip()
-                segments.append((start_ms, end_ms, text))
-
-                if segment_progress_bar:
-                    segment_progress_bar.set_postfix_str(f"{len(segments)} segments")
-
-            tqdm.write(f"Wykryty język: {result['language']}")
+        elif engine == "whisperx":
+            return False, "Błąd: WhisperX nie jest jeszcze zaimplementowany (KROK 2)", []
 
         else:
             return False, f"Błąd: Nieobsługiwany silnik transkrypcji: {engine}", []
-
-        if not segments:
-            return False, "Błąd: Transkrypcja nie zwróciła żadnych segmentów (puste audio lub brak mowy)", []
-
-        return True, f"Transkrypcja zakończona: {len(segments)} segmentów", segments
 
     except ImportError as e:
         return False, f"Błąd: Brak wymaganej biblioteki: {str(e)}", []
@@ -2133,9 +2190,9 @@ def main():
                        help='Rozmiar modelu Whisper (domyślnie: base)')
     transcription_group.add_argument('--language', type=str, default=None,
                        help='Język transkrypcji (domyślnie: auto-detekcja)')
-    transcription_group.add_argument('--engine', default='faster-whisper',
-                   choices=['faster-whisper', 'whisper'],
-                   help='Silnik transkrypcji (domyślnie: faster-whisper)')
+    transcription_group.add_argument('--engine', default='whisper',
+                   choices=['whisper', 'faster-whisper', 'whisperx'],
+                   help='Silnik transkrypcji (domyślnie: whisper)')
     transcription_group.add_argument('-t', '--translate', type=str, choices=['pl-en', 'en-pl'],
                        help='Tłumaczenie (pl-en: polski->angielski, en-pl: angielski->polski)')
 
