@@ -1,14 +1,51 @@
+# Virtual environments
 .venv/
+venv/
+env/
+
+# Python cache
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+
+# Git
 .git/
+.gitignore
+
+# IDE
 .vscode/
-specs/
+.idea/
 .claude/
+
+# Documentation
+docs/
+specs/
+*.md
+
+# Environment files
+.env
+.env.local
+
+# Logs
+*.log
+
+# Media files (not needed in build)
 *.mp4
 *.mkv
 *.avi
 *.mov
 *.wav
 *.mp3
+
+# Models (downloaded at runtime)
 models/
+
+# Backups
+*.backup
+Dockerfile.backup
+
+# Temporary files
+tmp/
+temp/

@@ -15,7 +15,9 @@
       "Bash(git checkout:*)",
       "Bash(python:*)",
       "Bash(pip uninstall:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(grep:*)",
+      "Bash(docker-compose build:*)"
     ],
     "deny": [],
     "ask": []
