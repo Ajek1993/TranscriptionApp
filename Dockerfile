@@ -2,7 +2,7 @@
 # DOCKERFILE - Transcription Tool with GPU Support
 # ============================================
 
-FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04 AS base
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 AS base
 
 # Prevent interactive prompts during build
 ENV DEBIAN_FRONTEND=noninteractive
@@ -35,15 +35,19 @@ RUN useradd -m -u 1000 transcriber \
 # Upgrade pip
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install PyTorch with CUDA 12.4 support (compatible with CUDA 12.8)
+# Install PyTorch with CUDA 12.4 support
 RUN pip install --no-cache-dir \
     torch torchvision torchaudio \
     --index-url https://download.pytorch.org/whl/cu124
 
 # Install project dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && \
-    python -c "import ctranslate2; print('CTranslate2:', ctranslate2.__version__)"
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Verify critical dependencies
+RUN python -c "import whisper; print('OpenAI Whisper:', whisper.__version__)" && \
+    python -c "import faster_whisper; print('Faster-Whisper:', faster_whisper.__version__)" && \
+    python -c "import torch; print('PyTorch:', torch.__version__, 'CUDA:', torch.version.cuda)"
 
 # Copy application code
 COPY data/transcribe.py .

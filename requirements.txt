@@ -1,7 +1,7 @@
 # =============================================================================
-# REQUIREMENTS FOR DOCKER (CUDA 12.8 + cuDNN 9)
+# REQUIREMENTS FOR DOCKER (CUDA 12.4 + cuDNN 9 Runtime)
 # =============================================================================
-# Ten plik jest zoptymalizowany dla obrazu Docker nvidia/cuda:12.8.0-cudnn9
+# Ten plik jest zoptymalizowany dla obrazu Docker nvidia/cuda:12.4.1-cudnn-runtime
 # Dla instalacji natywnej na Windows uzyj: requirements-windows.txt
 # =============================================================================
 
@@ -16,8 +16,8 @@ openai-whisper>=20240930
 # WhisperX - advanced transcription with word-level alignment
 whisperx>=3.1.1
 
-# CTranslate2 with cuDNN 9 support (required for CUDA 12.8)
-ctranslate2==4.6.0
+# REMOVED: ctranslate2==4.6.0
+# Note: faster-whisper now uses CPU exclusively (no CTranslate2 GPU acceleration needed)
 
 # =============================================================================
 # PyTorch is installed separately in Dockerfile:
@@ -25,9 +25,9 @@ ctranslate2==4.6.0
 # =============================================================================
 
 # =============================================================================
-# Kompatybilnosc z CUDA 12.8 + cuDNN 9:
-# - faster-whisper >= 1.1.0 (CTranslate2 >= 4.5.0)
-# - openai-whisper >= 20240930 (PyTorch cu124)
-# - WhisperX >= 3.3.0 (ctranslate2 >= 4.6.0 + torch >= 2.5.1)
+# Kompatybilnosc z CUDA 12.4 + cuDNN 9 Runtime:
+# - faster-whisper >= 1.1.0 (uses CPU, no CTranslate2 GPU support needed)
+# - openai-whisper >= 20240930 (PyTorch cu124, GPU support)
+# - WhisperX >= 3.1.1 (PyTorch cu124, GPU/CPU hybrid)
 # - Coqui TTS >= 0.27.0 (PyTorch CUDA 12.x)
 # =============================================================================
