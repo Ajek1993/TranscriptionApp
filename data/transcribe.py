@@ -42,6 +42,13 @@ try:
 except ImportError:
     EDGE_TTS_AVAILABLE = False
 
+# Coqui TTS support
+try:
+    from TTS.api import TTS
+    COQUI_TTS_AVAILABLE = True
+except ImportError:
+    COQUI_TTS_AVAILABLE = False
+
 
 # ===== LOGGING SETUP =====
 
@@ -286,7 +293,11 @@ def run_dubbing_pipeline(
     success, message, tts_files = generate_tts_segments(
         segments,
         str(tts_dir),
-        voice=args.tts_voice
+        voice=args.tts_voice,
+        engine=args.tts_engine,
+        coqui_model=args.coqui_model,
+        coqui_speaker=args.coqui_speaker,
+        speaker_wav=audio_path
     )
 
     if not success:
@@ -922,6 +933,18 @@ def check_edge_tts_dependency() -> Tuple[bool, str]:
     if not EDGE_TTS_AVAILABLE:
         return False, "Błąd: edge-tts nie jest zainstalowany. Zainstaluj: pip install edge-tts"
     return True, "edge-tts dostępny"
+
+
+def check_coqui_tts_dependency() -> Tuple[bool, str]:
+    """
+    Check if Coqui TTS is available for TTS dubbing.
+
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    if not COQUI_TTS_AVAILABLE:
+        return False, "Błąd: Coqui TTS nie jest zainstalowany. Zainstaluj: pip install TTS"
+    return True, "Coqui TTS dostępny"
 
 
 def download_audio(url: str, output_dir: str = ".") -> Tuple[bool, str, str]:
@@ -1899,7 +1922,7 @@ async def generate_tts_for_segment(
     rate: str = "+0%"
 ) -> Tuple[bool, str, float]:
     """
-    Generate TTS audio for a single text segment with speed control.
+    Generate TTS audio for a single text segment with speed control (Edge TTS).
 
     Args:
         text: Text to convert to speech
@@ -1925,10 +1948,101 @@ async def generate_tts_for_segment(
         return False, f"Błąd generowania TTS: {str(e)}", 0.0
 
 
+def generate_tts_coqui_for_segment(
+    text: str,
+    output_path: str,
+    model_name: str = "tts_models/pl/mai_female/vits",
+    speaker: str = None,
+    speaker_wav: str = None, 
+    speed: float = 1.0,
+    tts_instance: 'TTS' = None
+) -> Tuple[bool, str, float]:
+    """
+    Generate TTS audio for a single text segment with Coqui TTS.
+
+    Args:
+        text: Text to convert to speech
+        output_path: Path to save the MP3 file
+        model_name: Coqui TTS model name (default: tts_models/pl/mai_female/vits)
+        speaker: Speaker ID for multi-speaker models (optional)
+        speed: Speech speed multiplier (default: 1.0, range: 0.5-2.0)
+        tts_instance: Reusable TTS instance (optional, for performance)
+
+    Returns:
+        Tuple of (success: bool, message: str, duration_seconds: float)
+    """
+    try:
+        # Generate temporary WAV file
+        temp_wav = str(Path(output_path).with_suffix('.wav.tmp'))
+
+        # Initialize TTS if not provided
+        if tts_instance is None:
+            tts = TTS(model_name=model_name)
+        else:
+            tts = tts_instance
+
+        # ✅ JEDYNE wywołanie tts_to_file
+        kwargs = {"text": text, "file_path": temp_wav, "language": "pl"}
+        if "xtts" in model_name.lower():
+            if speaker_wav:                    # ✅ PRIORYTET 1: WAV plik
+                kwargs["speaker_wav"] = speaker_wav
+            elif speaker:                      # ✅ PRIORYTET 2: nazwa speakera
+                kwargs["speaker"] = speaker
+            else:
+                return False, "XTTS v2 wymaga speaker_wav LUB speaker", 0.0
+        elif speaker:
+            kwargs["speaker"] = speaker
+        
+        tts.tts_to_file(**kwargs)
+
+        # Apply speed adjustment and convert to MP3 if needed
+        if speed != 1.0:
+            # Use ffmpeg to adjust speed and convert to MP3
+            cmd = [
+                'ffmpeg', '-y', '-i', temp_wav,
+                '-filter:a', f'atempo={speed}',
+                '-b:a', '192k',
+                output_path
+            ]
+        else:
+            # Just convert WAV to MP3
+            cmd = [
+                'ffmpeg', '-y', '-i', temp_wav,
+                '-b:a', '192k',
+                output_path
+            ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+        # Clean up temporary WAV
+        if Path(temp_wav).exists():
+            Path(temp_wav).unlink()
+
+        if result.returncode != 0:
+            return False, f"Błąd konwersji audio: {result.stderr}", 0.0
+
+        # Get duration of generated audio
+        success, duration_sec = get_audio_duration(output_path)
+        if not success:
+            return False, "Błąd: Nie można odczytać długości wygenerowanego TTS", 0.0
+
+        return True, "TTS wygenerowany (Coqui)", duration_sec
+
+    except Exception as e:
+        # Clean up temporary WAV on error
+        if 'temp_wav' in locals() and Path(temp_wav).exists():
+            Path(temp_wav).unlink()
+        return False, f"Błąd generowania TTS (Coqui): {str(e)}", 0.0
+
+
 def generate_tts_segments(
     segments: List[Tuple[int, int, str]],
     output_dir: str,
-    voice: str = "pl-PL-MarekNeural"
+    voice: str = "pl-PL-MarekNeural",
+    engine: str = "edge",
+    coqui_model: str = "tts_models/pl/mai_female/vits",
+    coqui_speaker: str = None,
+    speaker_wav: str = None
 ) -> Tuple[bool, str, List[Tuple[int, str, float]]]:
     """
     Generate TTS for all segments with automatic speed adjustment.
@@ -1936,7 +2050,10 @@ def generate_tts_segments(
     Args:
         segments: List of (start_ms, end_ms, text) tuples
         output_dir: Directory to save TTS files
-        voice: Voice name
+        voice: Voice name (for Edge TTS)
+        engine: TTS engine ('edge' or 'coqui')
+        coqui_model: Coqui TTS model name (for Coqui TTS)
+        coqui_speaker: Speaker ID for multi-speaker Coqui models (optional)
 
     Returns:
         Tuple of (success: bool, message: str, tts_files: List[(start_ms, path, duration_sec)])
@@ -1946,7 +2063,17 @@ def generate_tts_segments(
 
     tts_files = []
 
-    print(f"Generowanie TTS dla {len(segments)} segmentów...")
+    # Initialize Coqui TTS instance once if using coqui engine
+    coqui_tts_instance = None
+    if engine == "coqui":
+        print(f"Ładowanie modelu Coqui TTS: {coqui_model}...")
+        try:
+            coqui_tts_instance = TTS(model_name=coqui_model)
+            print(f"Model Coqui TTS załadowany pomyślnie")
+        except Exception as e:
+            return False, f"Błąd ładowania modelu Coqui TTS: {str(e)}", []
+
+    print(f"Generowanie TTS dla {len(segments)} segmentów (engine: {engine})...")
 
     with tqdm(total=len(segments), desc="Generating TTS", unit="seg") as pbar:
         for idx, (start_ms, end_ms, text) in enumerate(segments):
@@ -1961,14 +2088,25 @@ def generate_tts_segments(
             tts_file = output_path / f"tts_{idx:04d}.mp3"
 
             # Try generating with normal speed first
-            rate = "+0%"
+            speed = 1.0  # For Coqui TTS
+            rate = "+0%"  # For Edge TTS
             max_retries = 3
 
             for retry in range(max_retries):
                 try:
-                    success, message, tts_duration = asyncio.run(
-                        generate_tts_for_segment(text, str(tts_file), voice, rate)
-                    )
+                    # Generate TTS based on engine
+                    if engine == "edge":
+                        success, message, tts_duration = asyncio.run(
+                            generate_tts_for_segment(text, str(tts_file), voice, rate)
+                        )
+                    elif engine == "coqui":
+                        success, message, tts_duration = generate_tts_coqui_for_segment(
+                            text, str(tts_file), coqui_model, coqui_speaker, speed, coqui_tts_instance, speaker_wav=speaker_wav
+                        )
+                    else:
+                        tqdm.write(f"Błąd: Nieznany silnik TTS: {engine}")
+                        pbar.update(1)
+                        break
 
                     if not success:
                         if retry < max_retries - 1:
@@ -1983,16 +2121,25 @@ def generate_tts_segments(
                     if tts_duration > slot_duration_sec * 1.5:
                         # Calculate required speed increase (max +50%)
                         speed_multiplier = min(tts_duration / slot_duration_sec, 1.5)
-                        rate_percent = int((speed_multiplier - 1.0) * 100)
-                        rate_percent = min(rate_percent, 50)  # Cap at +50%
-                        rate = f"+{rate_percent}%"
 
-                        tqdm.write(f"Segment {idx}: TTS za długi ({tts_duration:.2f}s > {slot_duration_sec:.2f}s), przyspieszam do {rate}")
+                        if engine == "edge":
+                            rate_percent = int((speed_multiplier - 1.0) * 100)
+                            rate_percent = min(rate_percent, 50)  # Cap at +50%
+                            rate = f"+{rate_percent}%"
+                            tqdm.write(f"Segment {idx}: TTS za długi ({tts_duration:.2f}s > {slot_duration_sec:.2f}s), przyspieszam do {rate}")
+                        elif engine == "coqui":
+                            speed = min(speed_multiplier, 1.5)  # Cap at 1.5x
+                            tqdm.write(f"Segment {idx}: TTS za długi ({tts_duration:.2f}s > {slot_duration_sec:.2f}s), przyspieszam do {speed:.2f}x")
 
                         # Regenerate with adjusted speed
-                        success, message, tts_duration = asyncio.run(
-                            generate_tts_for_segment(text, str(tts_file), voice, rate)
-                        )
+                        if engine == "edge":
+                            success, message, tts_duration = asyncio.run(
+                                generate_tts_for_segment(text, str(tts_file), voice, rate)
+                            )
+                        elif engine == "coqui":
+                            success, message, tts_duration = generate_tts_coqui_for_segment(
+                                text, str(tts_file), coqui_model, coqui_speaker, speed, coqui_tts_instance
+                            )
 
                         if not success:
                             if retry < max_retries - 1:
@@ -2343,7 +2490,7 @@ def main():
 
     # ===== OPCJE TRANSKRYPCJI =====
     transcription_group = parser.add_argument_group('Opcje transkrypcji', 'Konfiguracja modelu i języka transkrypcji')
-    transcription_group.add_argument('--model', default='base', choices=['tiny', 'base', 'small', 'medium', 'large'],
+    transcription_group.add_argument('--model', default='base', choices=['tiny', 'base', 'small', 'medium', 'large', 'large-v2', 'large-v3'],
                        help='Rozmiar modelu Whisper (domyślnie: base)')
     transcription_group.add_argument('--language', type=str, default=None,
                        help='Język transkrypcji (domyślnie: auto-detekcja)')
@@ -2377,18 +2524,66 @@ def main():
                        help='Generuj dubbing TTS (wymaga lokalnego pliku lub pobiera z YouTube)')
     dubbing_group.add_argument('--dub-audio-only', action='store_true',
                        help='Generuj tylko ścieżkę audio z dubbingiem (bez wideo, format WAV)')
+
+    # TTS Engine selection
+    dubbing_group.add_argument('--tts-engine', type=str, default='edge',
+                       choices=['edge', 'coqui'],
+                       help='Silnik TTS (domyślnie: edge)')
+
+    # Edge TTS options
     dubbing_group.add_argument('--tts-voice', type=str, default='pl-PL-MarekNeural',
                        choices=[
-                       'pl-PL-MarekNeural',    # Polski (PL) męski
-                       'pl-PL-ZofiaNeural',    # Polski (PL) żeński
+                       # Polski
+                       'pl-PL-MarekNeural',    # Polski męski
+                       'pl-PL-ZofiaNeural',    # Polski żeński
+                       # Angielski (US)
                        'en-US-GuyNeural',      # Angielski (US) męski
                        'en-US-JennyNeural',    # Angielski (US) żeński
+                       # Angielski (UK)
                        'en-GB-RyanNeural',     # Angielski (UK) męski
                        'en-GB-SoniaNeural',    # Angielski (UK) żeński
+                       # Angielski (AU)
                        'en-AU-WilliamNeural',  # Angielski (AU) męski
                        'en-AU-NatashaNeural',  # Angielski (AU) żeński
+                       # Niemiecki
+                       'de-DE-ConradNeural',   # Niemiecki męski
+                       'de-DE-KatjaNeural',    # Niemiecki żeński
+                       # Francuski
+                       'fr-FR-HenriNeural',    # Francuski męski
+                       'fr-FR-DeniseNeural',   # Francuski żeński
+                       # Hiszpański
+                       'es-ES-AlvaroNeural',   # Hiszpański (ES) męski
+                       'es-ES-ElviraNeural',   # Hiszpański (ES) żeński
+                       # Włoski
+                       'it-IT-DiegoNeural',    # Włoski męski
+                       'it-IT-ElsaNeural',     # Włoski żeński
+                       # Rosyjski
+                       'ru-RU-DmitryNeural',   # Rosyjski męski
+                       'ru-RU-SvetlanaNeural', # Rosyjski żeński
+                       # Japoński
+                       'ja-JP-KeitaNeural',    # Japoński męski
+                       'ja-JP-NanamiNeural',   # Japoński żeński
+                       # Chiński
+                       'zh-CN-YunxiNeural',    # Chiński (uproszczony) męski
+                       'zh-CN-XiaoxiaoNeural', # Chiński (uproszczony) żeński
+                       # Koreański
+                       'ko-KR-InJoonNeural',   # Koreański męski
+                       'ko-KR-SunHiNeural',    # Koreański żeński
+                       # Ukraiński
+                       'uk-UA-OstapNeural',    # Ukraiński męski
+                       'uk-UA-PolinaNeural',   # Ukraiński żeński
+                       # Czeski
+                       'cs-CZ-AntoninNeural',  # Czeski męski
+                       'cs-CZ-VlastaNeural',   # Czeski żeński
                        ],
-                       help='Głos TTS (domyślnie: pl-PL-MarekNeural)')
+                       help='Głos Edge TTS (domyślnie: pl-PL-MarekNeural)')
+
+    # Coqui TTS options
+    dubbing_group.add_argument('--coqui-model', type=str, default='tts_models/pl/mai_female/vits',
+                       help='Model Coqui TTS (domyślnie: tts_models/pl/mai_female/vits)')
+    dubbing_group.add_argument('--coqui-speaker', type=str, default=None,
+                       help='Speaker ID dla modeli multi-speaker (opcjonalnie)')
+
     dubbing_group.add_argument('--tts-volume', type=float, default=1.0,
                        help='Głośność TTS 0.0-2.0 (domyślnie: 1.0)')
     dubbing_group.add_argument('--original-volume', type=float, default=0.2,
@@ -2462,11 +2657,20 @@ def main():
         print(deps_msg)
         return 1
 
-    # Check edge-tts if dubbing is requested
+    # Check TTS dependency if dubbing is requested
     if args.dub or args.dub_audio_only:
-        tts_ok, tts_msg = check_edge_tts_dependency()
-        if not tts_ok:
-            print(tts_msg)
+        if args.tts_engine == "edge":
+            tts_ok, tts_msg = check_edge_tts_dependency()
+            if not tts_ok:
+                print(tts_msg)
+                return 1
+        elif args.tts_engine == "coqui":
+            tts_ok, tts_msg = check_coqui_tts_dependency()
+            if not tts_ok:
+                print(tts_msg)
+                return 1
+        else:
+            print(f"Błąd: Nieznany silnik TTS: {args.tts_engine}")
             return 1
 
     # Create temporary directory for intermediate files

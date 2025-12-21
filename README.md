@@ -378,6 +378,89 @@ python transcribe.py "URL" --engine whisperx --model base \
 | faster-whisper | ⚡⚡ | ⭐⭐⭐ | ❌ CPU only | ❌ |
 | whisperx | ⚡⚡⚡ | ⭐⭐⭐⭐⭐ | ✅ Auto | ✅ |
 
+## Silniki TTS (Text-to-Speech)
+
+Aplikacja obsługuje dwa silniki TTS do generowania dubbingu:
+
+### 1. Edge TTS (domyślny)
+- **Użycie:** `--tts-engine edge`
+- **Typ:** Cloudowy (Microsoft Azure)
+- **Zalety:**
+  - Bardzo szybki (online)
+  - Darmowy
+  - Nie wymaga GPU
+  - Wysoka jakość głosów
+- **Wady:** Wymaga połączenia internetowego
+
+**Dostępne języki:**
+- **Polski:** pl-PL-MarekNeural (męski), pl-PL-ZofiaNeural (żeński)
+- **Angielski:** en-US-GuyNeural, en-US-JennyNeural, en-GB-RyanNeural, en-GB-SoniaNeural, en-AU-WilliamNeural, en-AU-NatashaNeural
+- **Niemiecki:** de-DE-ConradNeural (męski), de-DE-KatjaNeural (żeński)
+- **Francuski:** fr-FR-HenriNeural (męski), fr-FR-DeniseNeural (żeński)
+- **Hiszpański:** es-ES-AlvaroNeural (męski), es-ES-ElviraNeural (żeński)
+- **Włoski:** it-IT-DiegoNeural (męski), it-IT-ElsaNeural (żeński)
+- **Rosyjski:** ru-RU-DmitryNeural (męski), ru-RU-SvetlanaNeural (żeński)
+- **Japoński:** ja-JP-KeitaNeural (męski), ja-JP-NanamiNeural (żeński)
+- **Chiński:** zh-CN-YunxiNeural (męski), zh-CN-XiaoxiaoNeural (żeński)
+- **Koreański:** ko-KR-InJoonNeural (męski), ko-KR-SunHiNeural (żeński)
+- **Ukraiński:** uk-UA-OstapNeural (męski), uk-UA-PolinaNeural (żeński)
+- **Czeski:** cs-CZ-AntoninNeural (męski), cs-CZ-VlastaNeural (żeński)
+
+**Użycie:**
+```bash
+# Docker - domyślny (Edge TTS)
+docker-compose run --rm transcribe "URL" --dub
+
+# Wybór głosu
+docker-compose run --rm transcribe "URL" --dub --tts-voice pl-PL-ZofiaNeural
+
+# Natywnie
+python transcribe.py "URL" --dub --tts-voice de-DE-KatjaNeural
+```
+
+### 2. Coqui TTS (lokalny)
+- **Użycie:** `--tts-engine coqui`
+- **Typ:** Lokalny (offline)
+- **Zalety:**
+  - Bardzo wysoka jakość głosu
+  - Działa offline
+  - Pełna kontrola nad modelem
+  - Wiele modeli wielojęzycznych
+- **Wady:**
+  - Wolniejszy niż Edge TTS
+  - Wymaga GPU dla najlepszej wydajności
+  - Większe zużycie pamięci (modele 100-500 MB)
+
+**Dostępne modele polskie:**
+- `tts_models/pl/mai_female/vits` - polski głos żeński (domyślny, najlepsza jakość)
+- `tts_models/multilingual/multi-dataset/xtts_v2` - XTTS v2 (multi-language, wymaga GPU)
+- `tts_models/multilingual/multi-dataset/your_tts` - Your TTS (szybszy)
+
+**Użycie:**
+```bash
+# Docker - Coqui TTS z domyślnym modelem polskim
+docker-compose run --rm transcribe "URL" --dub --tts-engine coqui
+
+# Wybór innego modelu
+docker-compose run --rm transcribe "URL" --dub --tts-engine coqui \
+  --coqui-model tts_models/multilingual/multi-dataset/xtts_v2
+
+# Multi-speaker model (jeśli model obsługuje)
+docker-compose run --rm transcribe "URL" --dub --tts-engine coqui \
+  --coqui-model tts_models/multilingual/multi-dataset/xtts_v2 \
+  --coqui-speaker "speaker_01"
+
+# Natywnie
+python transcribe.py "URL" --dub --tts-engine coqui --coqui-model tts_models/pl/mai_female/vits
+```
+
+**Porównanie silników TTS:**
+
+| Silnik | Jakość | Szybkość | Offline | Języki PL | GPU | Rozmiar modelu |
+|--------|--------|----------|---------|-----------|-----|----------------|
+| **Edge TTS** | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ | ❌ | 2 głosy | ❌ | 0 MB (cloud) |
+| **Coqui TTS** | ⭐⭐⭐⭐⭐ | ⚡⚡ | ✅ | 40+ | Opcjonalnie | 100-500 MB |
+
 ### 8. Starsze opcje silnika transkrypcji
 
 ```bash
@@ -470,7 +553,16 @@ docker-compose run --rm transcribe python -c "import torch; print('GPU:', torch.
 
 ## Historia zmian
 
-### v4.0 (Obecna)
+### v4.1 (Obecna)
+
+- **Dwa silniki TTS:** Edge TTS (domyślny, cloudowy) i Coqui TTS (lokalny, wysokiej jakości)
+- **Coqui TTS:** Lokalne generowanie dubbingu offline z modelami 100-500MB, opcjonalne GPU
+- **Rozszerzone wsparcie językowe Edge TTS:** Niemiecki, Francuski, Hiszpański, Włoski, Rosyjski, Japoński, Chiński, Koreański, Ukraiński, Czeski
+- Argumenty CLI: `--tts-engine`, `--coqui-model`, `--coqui-speaker`
+- Automatyczne wykrywanie i inicjalizacja odpowiedniego silnika TTS
+- Wsparcie dla multi-speaker modeli Coqui TTS
+
+### v4.0
 
 - Trzy silniki transkrypcji: OpenAI Whisper (domyślny), Faster-Whisper (CPU), WhisperX (zaawansowany)
 - Zmiana domyślnego silnika z faster-whisper na whisper (szybszy GPU support)
