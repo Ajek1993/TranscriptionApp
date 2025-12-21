@@ -114,6 +114,52 @@ class OutputManager:
                 print(f"{key}: {value}")
 
 
+# ===== TTS LANGUAGE SUPPORT =====
+
+# XTTS v2 supported languages
+XTTS_SUPPORTED_LANGUAGES = [
+    "en", "es", "fr", "de", "it", "pt", "pl",
+    "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko"
+]
+
+def determine_tts_target_language(
+    transcription_language: str = None,
+    translation_spec: str = None
+) -> str:
+    """
+    Determine which language TTS should use.
+
+    Logic:
+    1. If --translate specified: use TARGET language (e.g., "pl-en" -> "en")
+    2. Else if --language specified: use transcription language
+    3. Else: default to "pl"
+
+    Args:
+        transcription_language: Value from --language flag (e.g., "pl", "en")
+        translation_spec: Value from --translate flag (e.g., "pl-en", "en-pl")
+
+    Returns:
+        ISO language code for TTS ("pl", "en", etc.)
+
+    Examples:
+        >>> determine_tts_target_language(None, "pl-en")
+        "en"
+        >>> determine_tts_target_language("pl", None)
+        "pl"
+        >>> determine_tts_target_language(None, None)
+        "pl"
+    """
+    if translation_spec:
+        # Translation takes priority - use TARGET language
+        src_lang, tgt_lang = translation_spec.split('-')
+        return tgt_lang
+
+    if transcription_language:
+        return transcription_language
+
+    return "pl"  # Default fallback
+
+
 # ===== COMMAND BUILDERS =====
 
 def build_ffprobe_audio_info_cmd(file_path: str) -> list:
@@ -289,6 +335,19 @@ def run_dubbing_pipeline(
     tts_dir = Path(temp_dir) / "tts"
     tts_dir.mkdir(exist_ok=True)
 
+    # Determine target language for TTS
+    tts_language = determine_tts_target_language(
+        transcription_language=args.language,
+        translation_spec=args.translate
+    )
+
+    print(f"Język TTS: {tts_language}", end="")
+    if args.translate:
+        src, tgt = args.translate.split('-')
+        print(f" (tłumaczenie: {src} → {tgt})")
+    else:
+        print()
+
     # Generate TTS for each segment
     success, message, tts_files = generate_tts_segments(
         segments,
@@ -297,7 +356,8 @@ def run_dubbing_pipeline(
         engine=args.tts_engine,
         coqui_model=args.coqui_model,
         coqui_speaker=args.coqui_speaker,
-        speaker_wav=audio_path
+        speaker_wav=audio_path,
+        target_language=tts_language
     )
 
     if not success:
@@ -2003,9 +2063,10 @@ def generate_tts_coqui_for_segment(
     output_path: str,
     model_name: str = "tts_models/pl/mai_female/vits",
     speaker: str = None,
-    speaker_wav: str = None, 
+    speaker_wav: str = None,
     speed: float = 1.0,
-    tts_instance: 'TTS' = None
+    tts_instance: 'TTS' = None,
+    language: str = "pl"
 ) -> Tuple[bool, str, float]:
     """
     Generate TTS audio for a single text segment with Coqui TTS.
@@ -2016,6 +2077,7 @@ def generate_tts_coqui_for_segment(
         model_name: Coqui TTS model name (default: tts_models/pl/mai_female/vits)
         speaker: Speaker ID for multi-speaker models (optional)
         speed: Speech speed multiplier (default: 1.0, range: 0.5-2.0)
+        language: Language code for XTTS models (e.g., "pl", "en")
         tts_instance: Reusable TTS instance (optional, for performance)
 
     Returns:
@@ -2041,7 +2103,7 @@ def generate_tts_coqui_for_segment(
         # ✅ JEDYNE wywołanie tts_to_file
         kwargs = {"text": text, "file_path": temp_wav}
         if "xtts" in model_name.lower():
-            kwargs["language"] = "pl" 
+            kwargs["language"] = language 
             if speaker_wav:                    # ✅ PRIORYTET 1: WAV plik
                 kwargs["speaker_wav"] = speaker_wav
             elif speaker:                      # ✅ PRIORYTET 2: nazwa speakera
@@ -2100,8 +2162,9 @@ def generate_tts_segments(
     engine: str = "edge",
     coqui_model: str = "tts_models/pl/mai_female/vits",
     coqui_speaker: str = None,
-    speaker_wav: str = None
-) -> Tuple[bool, str, List[Tuple[int, str, float]]]:
+    speaker_wav: str = None,
+    target_language: str = "pl"
+) -> Tuple[bool, str, List[Tuple[int, int, str, float]]]:
     """
     Generate TTS for all segments with automatic speed adjustment.
 
@@ -2112,9 +2175,10 @@ def generate_tts_segments(
         engine: TTS engine ('edge' or 'coqui')
         coqui_model: Coqui TTS model name (for Coqui TTS)
         coqui_speaker: Speaker ID for multi-speaker Coqui models (optional)
+        target_language: Target language code for TTS (e.g., "pl", "en")
 
     Returns:
-        Tuple of (success: bool, message: str, tts_files: List[(start_ms, path, duration_sec)])
+        Tuple of (success: bool, message: str, tts_files: List[(start_ms, end_ms, path, duration_sec)])
     """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -2166,7 +2230,8 @@ def generate_tts_segments(
                         )
                     elif engine == "coqui":
                         success, message, tts_duration = generate_tts_coqui_for_segment(
-                            text, str(tts_file), coqui_model, coqui_speaker, speaker_wav, speed, coqui_tts_instance
+                            text, str(tts_file), coqui_model, coqui_speaker, speaker_wav, speed,
+                            coqui_tts_instance, language=target_language
                         )
                     else:
                         tqdm.write(f"Błąd: Nieznany silnik TTS: {engine}")
@@ -2182,10 +2247,12 @@ def generate_tts_segments(
                             pbar.update(1)
                             break
 
-                    # Check if TTS is too long for the slot
-                    if tts_duration > slot_duration_sec * 1.5:
-                        # Calculate required speed increase (max +50%)
-                        speed_multiplier = min(tts_duration / slot_duration_sec, 1.5)
+                    # Check if TTS is too long for the slot and needs to be sped up
+                    if tts_duration > slot_duration_sec:
+                        # Target 98% of slot duration to leave a small gap
+                        target_duration_sec = slot_duration_sec * 0.98
+                        speed_multiplier = tts_duration / target_duration_sec
+                        speed_multiplier = max(1.0, min(speed_multiplier, 1.5))  # Only speed UP (1.0x-1.5x)
 
                         if engine == "edge":
                             rate_percent = int((speed_multiplier - 1.0) * 100)
@@ -2193,7 +2260,7 @@ def generate_tts_segments(
                             rate = f"+{rate_percent}%"
                             tqdm.write(f"Segment {idx}: TTS za długi ({tts_duration:.2f}s > {slot_duration_sec:.2f}s), przyspieszam do {rate}")
                         elif engine == "coqui":
-                            speed = min(speed_multiplier, 1.5)  # Cap at 1.5x
+                            speed = speed_multiplier
                             tqdm.write(f"Segment {idx}: TTS za długi ({tts_duration:.2f}s > {slot_duration_sec:.2f}s), przyspieszam do {speed:.2f}x")
 
                         # Regenerate with adjusted speed
@@ -2203,7 +2270,8 @@ def generate_tts_segments(
                             )
                         elif engine == "coqui":
                             success, message, tts_duration = generate_tts_coqui_for_segment(
-                                text, str(tts_file), coqui_model, coqui_speaker, speaker_wav, speed, coqui_tts_instance
+                                text, str(tts_file), coqui_model, coqui_speaker, speaker_wav, speed,
+                                coqui_tts_instance, language=target_language
                             )
 
                         if not success:
@@ -2215,7 +2283,7 @@ def generate_tts_segments(
                                 pbar.update(1)
                                 break
 
-                    tts_files.append((start_ms, str(tts_file), tts_duration))
+                    tts_files.append((start_ms, end_ms, str(tts_file), tts_duration))
                     pbar.update(1)
                     break
 
@@ -2234,7 +2302,7 @@ def generate_tts_segments(
 
 
 def create_tts_audio_track(
-    tts_files: List[Tuple[int, str, float]],
+    tts_files: List[Tuple[int, int, str, float]],
     total_duration_ms: int,
     output_path: str
 ) -> Tuple[bool, str]:
@@ -2243,7 +2311,7 @@ def create_tts_audio_track(
     This avoids amix completely and ensures constant volume.
 
     Args:
-        tts_files: List of (start_ms, file_path, duration_sec) tuples
+        tts_files: List of (start_ms, end_ms, file_path, actual_duration_sec) tuples
         total_duration_ms: Total duration of the final track in milliseconds
         output_path: Path to save the combined audio
 
@@ -2266,10 +2334,10 @@ def create_tts_audio_track(
         
         current_time_ms = 0
         
-        for idx, (start_ms, file_path, duration_sec) in enumerate(sorted_segments):
+        for idx, (start_ms, end_ms, file_path, actual_duration_sec) in enumerate(sorted_segments):
             # Add input file
             input_args.extend(['-i', str(file_path)])
-            
+
             # If there's a gap before this segment, add silence
             if start_ms > current_time_ms:
                 gap_duration_sec = (start_ms - current_time_ms) / 1000.0
@@ -2278,17 +2346,17 @@ def create_tts_audio_track(
                     f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={gap_duration_sec}[{silence_label}]"
                 )
                 concat_inputs.append(f"[{silence_label}]")
-            
+
             # Add this segment (convert to stereo if needed)
             segment_label = f"seg{idx}"
             filter_parts.append(
                 f"[{idx}:a]aformat=sample_rates=44100:channel_layouts=stereo[{segment_label}]"
             )
             concat_inputs.append(f"[{segment_label}]")
-            
-            # Update current time
-            segment_duration_ms = int(duration_sec * 1000)
-            current_time_ms = start_ms + segment_duration_ms
+
+            # Update current time - use end_ms from segment to avoid timing drift
+            slot_duration_ms = end_ms - start_ms
+            current_time_ms = end_ms
         
         # Add final silence to reach total duration
         if current_time_ms < total_duration_ms:
