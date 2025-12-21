@@ -465,7 +465,7 @@ def burn_subtitles_to_video_pipeline(original_video_path: str, srt_filename: str
 
 # ===== TRANSCRIPTION PIPELINE =====
 
-def _transcribe_all_chunks(chunk_paths: List[str], args) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
+def _transcribe_all_chunks(chunk_paths: List[str], args, force_device: str = 'auto') -> Tuple[bool, str, List[Tuple[int, int, str]]]:
     """
     Transcribe all chunks with progress tracking.
 
@@ -506,7 +506,8 @@ def _transcribe_all_chunks(chunk_paths: List[str], args) -> Tuple[bool, str, Lis
                 whisperx_diarize=getattr(args, 'whisperx_diarize', False),
                 whisperx_min_speakers=getattr(args, 'whisperx_min_speakers', None),
                 whisperx_max_speakers=getattr(args, 'whisperx_max_speakers', None),
-                hf_token=getattr(args, 'hf_token', None)
+                hf_token=getattr(args, 'hf_token', None),
+                force_device=force_device
             )
 
             # Close segment progress bar
@@ -617,7 +618,7 @@ def run_transcription_pipeline(audio_path: str, args, temp_dir: str) -> Tuple[bo
         return False, "ONLY_CHUNK_MODE", []
 
     # Stage 3: Transcribe all chunks
-    success, message, all_segments = _transcribe_all_chunks(chunk_paths, args)
+    success, message, all_segments = _transcribe_all_chunks(chunk_paths, args, force_device=args.device)
     if not success:
         return False, message, []
 
@@ -1263,8 +1264,20 @@ def get_gpu_memory_info() -> str:
     return ""
 
 
-def detect_device() -> Tuple[str, str]:
-    """Detect available device with cuDNN validation."""
+def detect_device(force_device: str = 'auto') -> Tuple[str, str]:
+    """
+    Detect available device with cuDNN validation.
+
+    Args:
+        force_device: Device override ('auto', 'cuda', 'cpu')
+
+    Returns:
+        Tuple of (device: str, device_info: str)
+    """
+    # Force CPU if requested
+    if force_device == 'cpu':
+        return "cpu", "CPU (forced by --device cpu)"
+
     try:
         import torch
         if torch.cuda.is_available():
@@ -1273,15 +1286,30 @@ def detect_device() -> Tuple[str, str]:
             cudnn_version = torch.backends.cudnn.version()
 
             if cudnn_version and cudnn_version >= 8000:  # cuDNN 8.x
-                device_info = f"NVIDIA GPU ({gpu_name}, CUDA {cuda_version}, cuDNN {cudnn_version // 1000}.{(cudnn_version % 1000) // 100})"
+                if force_device == 'cuda':
+                    device_info = f"NVIDIA GPU ({gpu_name}, CUDA {cuda_version}, cuDNN {cudnn_version // 1000}.{(cudnn_version % 1000) // 100}) [forced]"
+                else:
+                    device_info = f"NVIDIA GPU ({gpu_name}, CUDA {cuda_version}, cuDNN {cudnn_version // 1000}.{(cudnn_version % 1000) // 100})"
                 return "cuda", device_info
             else:
-                tqdm.write(f"Warning: cuDNN {cudnn_version} too old. Need >=8.0. Falling back to CPU")
+                if force_device == 'cuda':
+                    tqdm.write(f"Warning: --device cuda requested but cuDNN {cudnn_version} too old. Need >=8.0. Falling back to CPU")
+                else:
+                    tqdm.write(f"Warning: cuDNN {cudnn_version} too old. Need >=8.0. Falling back to CPU")
                 return "cpu", f"CPU (cuDNN incompatible: {cudnn_version})"
+        else:
+            # No CUDA available
+            if force_device == 'cuda':
+                tqdm.write("Warning: --device cuda requested but CUDA not available. Falling back to CPU")
+            return "cpu", "CPU (CUDA not available)"
     except ImportError:
+        if force_device == 'cuda':
+            tqdm.write("Warning: --device cuda requested but PyTorch not available. Falling back to CPU")
         pass
     except Exception as e:
         tqdm.write(f"Warning: GPU detection failed: {e}")
+        if force_device == 'cuda':
+            tqdm.write("Falling back to CPU")
 
     return "cpu", "CPU"
 
@@ -1291,7 +1319,8 @@ def transcribe_with_whisper(
     model_size: str,
     language: str,
     segment_progress_bar: tqdm,
-    timeout_seconds: int
+    timeout_seconds: int,
+    force_device: str = 'auto'
 ) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
     """
     Transkrypcja z OpenAI Whisper (automatyczne GPU/CUDA).
@@ -1304,7 +1333,7 @@ def transcribe_with_whisper(
         return False, "Błąd: whisper nie jest zainstalowany. Zainstaluj: pip install openai-whisper", []
 
     # Detekcja urządzenia (GPU preferred)
-    device, device_info = detect_device()
+    device, device_info = detect_device(force_device=force_device)
     tqdm.write(f"Używane urządzenie: {device_info}")
 
     # Ładowanie modelu
@@ -1356,7 +1385,8 @@ def transcribe_with_faster_whisper(
     model_size: str,
     language: str,
     segment_progress_bar: tqdm,
-    timeout_seconds: int
+    timeout_seconds: int,
+    force_device: str = 'auto'
 ) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
     """
     Transkrypcja z Faster-Whisper (zawsze CPU).
@@ -1367,6 +1397,10 @@ def transcribe_with_faster_whisper(
         from faster_whisper import WhisperModel
     except ImportError:
         return False, "Błąd: faster-whisper nie jest zainstalowany. Zainstaluj: pip install faster-whisper", []
+
+    # Log if user tried to force GPU
+    if force_device == 'cuda':
+        tqdm.write("Warning: Faster-Whisper zawsze używa CPU (CTranslate2 limitation). Ignoruję --device cuda")
 
     # WYMUSZENIE CPU dla Faster-Whisper
     device = "cpu"
@@ -1419,7 +1453,8 @@ def transcribe_with_whisperx(
     diarize: bool = False,
     min_speakers: int = None,
     max_speakers: int = None,
-    hf_token: str = None
+    hf_token: str = None,
+    force_device: str = 'auto'
 ) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
     """
     Transkrypcja z WhisperX (GPU/CPU, alignment, diarization).
@@ -1436,7 +1471,7 @@ def transcribe_with_whisperx(
         return False, "Błąd: whisperx nie jest zainstalowany. Zainstaluj: pip install whisperx", []
 
     # Detekcja urządzenia
-    device, device_info = detect_device()
+    device, device_info = detect_device(force_device=force_device)
     tqdm.write(f"Używane urządzenie: {device_info}")
 
     # Compute type
@@ -1558,7 +1593,8 @@ def transcribe_chunk(
     whisperx_diarize: bool = False,
     whisperx_min_speakers: int = None,
     whisperx_max_speakers: int = None,
-    hf_token: str = None
+    hf_token: str = None,
+    force_device: str = 'auto'
 ) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
     """
     Transkrypcja pliku WAV przy użyciu wybranego silnika.
@@ -1575,6 +1611,7 @@ def transcribe_chunk(
         whisperx_min_speakers: Min liczba mówców (tylko WhisperX)
         whisperx_max_speakers: Max liczba mówców (tylko WhisperX)
         hf_token: HuggingFace token (tylko WhisperX diarization)
+        force_device: Device override ('auto', 'cuda', 'cpu')
 
     Returns:
         Tuple (success: bool, message: str, segments: List[(start_ms, end_ms, text)])
@@ -1589,13 +1626,15 @@ def transcribe_chunk(
         if engine == "whisper":
             return transcribe_with_whisper(
                 wav_path, model_size, language,
-                segment_progress_bar, timeout_seconds
+                segment_progress_bar, timeout_seconds,
+                force_device=force_device
             )
 
         elif engine == "faster-whisper":
             return transcribe_with_faster_whisper(
                 wav_path, model_size, language,
-                segment_progress_bar, timeout_seconds
+                segment_progress_bar, timeout_seconds,
+                force_device=force_device
             )
 
         elif engine == "whisperx":
@@ -1606,7 +1645,8 @@ def transcribe_chunk(
                 diarize=whisperx_diarize,
                 min_speakers=whisperx_min_speakers,
                 max_speakers=whisperx_max_speakers,
-                hf_token=hf_token
+                hf_token=hf_token,
+                force_device=force_device
             )
 
         else:
@@ -1988,6 +2028,13 @@ def generate_tts_coqui_for_segment(
         # Initialize TTS if not provided
         if tts_instance is None:
             tts = TTS(model_name=model_name)
+            # Coqui TTS zawsze próbuje GPU (niezależnie od --device dla transkrypcji)
+            tts_device, tts_device_info = detect_device(force_device='auto')
+            try:
+                tts = tts.to(tts_device)
+            except Exception as e:
+                # Silently ignore if .to() fails - TTS will use default device
+                pass
         else:
             tts = tts_instance
 
@@ -2080,7 +2127,14 @@ def generate_tts_segments(
         print(f"Ładowanie modelu Coqui TTS: {coqui_model}...")
         try:
             coqui_tts_instance = TTS(model_name=coqui_model)
-            print(f"Model Coqui TTS załadowany pomyślnie")
+            # Coqui TTS zawsze próbuje GPU (niezależnie od --device dla transkrypcji)
+            tts_device, tts_device_info = detect_device(force_device='auto')
+            try:
+                coqui_tts_instance = coqui_tts_instance.to(tts_device)
+                print(f"Model Coqui TTS załadowany pomyślnie na: {tts_device_info}")
+            except Exception as e:
+                print(f"Warning: Nie można przenieść Coqui TTS na {tts_device}: {e}")
+                print("Coqui TTS użyje domyślnego urządzenia")
         except Exception as e:
             return False, f"Błąd ładowania modelu Coqui TTS: {str(e)}", []
 
@@ -2402,7 +2456,7 @@ def burn_subtitles_to_video(
     video_path: str,
     srt_path: str,
     output_path: str,
-    subtitle_style: str = "FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,BorderStyle=4,Outline=0,Shadow=0,MarginV=20"
+    subtitle_style: str = "FontName=Arial,FontSize=16,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,BorderStyle=4,Outline=0,Shadow=0,MarginV=20"
 ) -> Tuple[bool, str]:
     """
     Burn (hardcode) subtitles into video permanently.
@@ -2604,7 +2658,7 @@ def main():
     dubbing_group.add_argument('--burn-subtitles', action='store_true',
                    help='Wgraj napisy na stałe do wideo (wymaga wideo z YouTube lub lokalnego)')
     dubbing_group.add_argument('--subtitle-style', type=str,
-                    default='FontName=Arial,FontSize=24,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,BorderStyle=4,Outline=0,Shadow=0,MarginV=20',
+                    default='FontName=Arial,FontSize=16,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,BorderStyle=4,Outline=0,Shadow=0,MarginV=20',
                     help='Styl napisów ASS (domyślnie: biały tekst, półprzezroczyste ciemne tło)')
     dubbing_group.add_argument('--burn-output', type=str,
                    help='Nazwa pliku wyjściowego z napisami (domyślnie: {video_id}_subtitled.mp4)')
@@ -2633,6 +2687,9 @@ def main():
         help='Timeout per chunk in seconds (default: 1800 = 30 min, 0 = no timeout)')
     advanced_group.add_argument('--debug', action='store_true',
         help='Enable debug logging with detailed diagnostics')
+    advanced_group.add_argument('--device', type=str, default='auto',
+        choices=['auto', 'cuda', 'cpu'],
+        help='Device selection for transcription engines: auto (default, GPU if available), cuda (force GPU), cpu (force CPU). Note: Coqui TTS always tries GPU regardless of this setting.')
 
 
 
