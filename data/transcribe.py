@@ -279,7 +279,7 @@ def run_dubbing_pipeline(
     Returns:
         Tuple of (success, error_msg)
     """
-    OutputManager.stage_header(4, "Generowanie dubbingu TTS")
+    OutputManager.stage_header(5, "Generowanie dubbingu TTS")
 
     # For full dubbing, we need video file
     if args.dub and not original_video_path:
@@ -420,7 +420,7 @@ def burn_subtitles_to_video_pipeline(original_video_path: str, srt_filename: str
     Returns:
         Tuple of (success, error_msg)
     """
-    OutputManager.stage_header(5, "Wgrywanie napisów do wideo")
+    OutputManager.stage_header(4, "Wgrywanie napisów do wideo")
 
     # Need video file
     if not original_video_path:
@@ -1272,11 +1272,11 @@ def detect_device() -> Tuple[str, str]:
             cuda_version = torch.version.cuda
             cudnn_version = torch.backends.cudnn.version()
 
-            if cudnn_version and cudnn_version >= 90000:  # cuDNN 9.x
+            if cudnn_version and cudnn_version >= 8000:  # cuDNN 8.x
                 device_info = f"NVIDIA GPU ({gpu_name}, CUDA {cuda_version}, cuDNN {cudnn_version // 1000}.{(cudnn_version % 1000) // 100})"
                 return "cuda", device_info
             else:
-                tqdm.write(f"Warning: cuDNN {cudnn_version} too old. Need >=9.0 for CUDA 12.8. Falling back to CPU")
+                tqdm.write(f"Warning: cuDNN {cudnn_version} too old. Need >=8.0. Falling back to CPU")
                 return "cpu", f"CPU (cuDNN incompatible: {cudnn_version})"
     except ImportError:
         pass
@@ -1476,24 +1476,36 @@ def transcribe_with_whisperx(
     except Exception as e:
         return False, f"Błąd podczas transkrypcji WhisperX: {str(e)}", []
 
+    # Wykryj język jeśli nie był podany jawnie
+    detected_language = result.get("language", language)
+    if detected_language:
+        tqdm.write(f"Wykryty język: {detected_language}")
+
     # Word-level alignment (opcjonalnie)
     if align:
         tqdm.write("Wykonywanie word-level alignment...")
-        try:
-            model_a, metadata = whisperx.load_align_model(
-                language_code=language,
-                device=device
-            )
-            result = whisperx.align(
-                result["segments"],
-                model_a,
-                metadata,
-                audio,
-                device,
-                return_char_alignments=False
-            )
-        except Exception as e:
-            tqdm.write(f"Ostrzeżenie: Alignment nie powiódł się: {e}")
+
+        # Użyj wykrytego języka jeśli nie był podany jawnie
+        align_language = language if language else detected_language
+
+        if not align_language:
+            tqdm.write("Ostrzeżenie: Nie można wykonać alignment - brak informacji o języku")
+        else:
+            try:
+                model_a, metadata = whisperx.load_align_model(
+                    language_code=align_language,
+                    device=device
+                )
+                result = whisperx.align(
+                    result["segments"],
+                    model_a,
+                    metadata,
+                    audio,
+                    device,
+                    return_char_alignments=False
+                )
+            except Exception as e:
+                tqdm.write(f"Ostrzeżenie: Alignment nie powiódł się: {e}")
 
     # Speaker diarization (opcjonalnie)
     if diarize:
@@ -1530,8 +1542,6 @@ def transcribe_with_whisperx(
 
         if segment_progress_bar:
             segment_progress_bar.set_postfix_str(f"{len(segments)} segments")
-
-    tqdm.write(f"Wykryty język: {result.get('language', language)}")
 
     return True, f"Transkrypcja zakończona: {len(segments)} segmentów", segments
 
@@ -1982,8 +1992,9 @@ def generate_tts_coqui_for_segment(
             tts = tts_instance
 
         # ✅ JEDYNE wywołanie tts_to_file
-        kwargs = {"text": text, "file_path": temp_wav, "language": "pl"}
+        kwargs = {"text": text, "file_path": temp_wav}
         if "xtts" in model_name.lower():
+            kwargs["language"] = "pl" 
             if speaker_wav:                    # ✅ PRIORYTET 1: WAV plik
                 kwargs["speaker_wav"] = speaker_wav
             elif speaker:                      # ✅ PRIORYTET 2: nazwa speakera
@@ -2101,7 +2112,7 @@ def generate_tts_segments(
                         )
                     elif engine == "coqui":
                         success, message, tts_duration = generate_tts_coqui_for_segment(
-                            text, str(tts_file), coqui_model, coqui_speaker, speed, coqui_tts_instance, speaker_wav=speaker_wav
+                            text, str(tts_file), coqui_model, coqui_speaker, speaker_wav, speed, coqui_tts_instance
                         )
                     else:
                         tqdm.write(f"Błąd: Nieznany silnik TTS: {engine}")
@@ -2138,7 +2149,7 @@ def generate_tts_segments(
                             )
                         elif engine == "coqui":
                             success, message, tts_duration = generate_tts_coqui_for_segment(
-                                text, str(tts_file), coqui_model, coqui_speaker, speed, coqui_tts_instance
+                                text, str(tts_file), coqui_model, coqui_speaker, speaker_wav, speed, coqui_tts_instance
                             )
 
                         if not success:
@@ -2391,7 +2402,7 @@ def burn_subtitles_to_video(
     video_path: str,
     srt_path: str,
     output_path: str,
-    subtitle_style: str = "FontName=Arial,FontSize=24,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,BorderStyle=4,Outline=0,Shadow=0,MarginV=20"
+    subtitle_style: str = "FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,BorderStyle=4,Outline=0,Shadow=0,MarginV=20"
 ) -> Tuple[bool, str]:
     """
     Burn (hardcode) subtitles into video permanently.
