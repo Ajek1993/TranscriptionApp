@@ -6,6 +6,27 @@ Narzędzie do automatycznej transkrypcji filmów z YouTube lub lokalnych plików
 
 Aplikacja pobiera audio z YouTube lub tworzy je z lokalnych plików wideo, przetwarza je i generuje plik napisów SRT z wykorzystaniem modelu Whisper. Wspiera trzy silniki transkrypcji: OpenAI Whisper (domyślny, GPU), Faster-Whisper (CPU) i WhisperX (zaawansowany z alignmentem i diaryzacją). Wspiera długie materiały audio poprzez automatyczny podział na fragmenty oraz opcjonalne tłumaczenie między polskim a angielskim. Nowa funkcjonalność dubbingu TTS pozwala na wygenerowanie polskiej ścieżki audio z synchronizacją czasową i mixowaniem z oryginalnym dźwiękiem.
 
+## Architektura modularna
+
+Kod aplikacji został zorganizowany w modularną architekturę składającą się z 13 wyspecjalizowanych modułów:
+
+- **transcribe.py** - Główny orchestrator CLI, parsowanie argumentów i orchestracja pipeline'ów
+- **output_manager.py** - Klasa OutputManager do formatowania komunikatów (stage headers, info, success, warnings)
+- **command_builders.py** - Budowanie komend FFmpeg i yt-dlp (audio/video extraction, splitting, merging)
+- **validators.py** - Walidacja URL/plików, sprawdzanie zależności (ffmpeg, yt-dlp, TTS engines)
+- **youtube_processor.py** - Pobieranie audio/wideo z YouTube, ekstrakcja audio z plików wideo
+- **audio_processor.py** - Operacje na plikach audio (duration, splitting chunks)
+- **device_manager.py** - Detekcja dostępności GPU/CPU, pamięć GPU
+- **transcription_engines.py** - Implementacja 3 silników transkrypcji (Whisper, Faster-Whisper, WhisperX)
+- **segment_processor.py** - Dzielenie długich segmentów, wypełnianie luk, formatowanie timestampów SRT
+- **translation.py** - Tłumaczenie segmentów napisów (Google Translate via deep-translator)
+- **srt_writer.py** - Generowanie plików SRT ze standardowym formatowaniem
+- **tts_generator.py** - Generowanie dubbingu TTS (Edge TTS + Coqui TTS), synchronizacja audio
+- **audio_mixer.py** - Miksowanie ścieżek audio, tworzenie wideo z dubbingiem, wgrywanie napisów
+- **utils.py** - Czyszczenie plików tymczasowych
+
+Wszystkie moduły są zorganizowane jako acykliczny graf zależności (DAG), co zapewnia czytelność kodu i łatwość w rozwijaniu aplikacji.
+
 ## Funkcje
 
 - **Transkrypcja z YouTube**: Pobieranie audio z YouTube w formacie WAV
@@ -15,6 +36,7 @@ Aplikacja pobiera audio z YouTube lub tworzy je z lokalnych plików wideo, przet
 - **Wgrywanie napisów do wideo**: Hardcode subtitles z customizacją stylu (białe napisy, ciemne tło)
 - **Wybór silnika transkrypcji**: OpenAI Whisper (domyślny), Faster-Whisper (CPU), WhisperX (zaawansowany)
 - **Docker**: Pełna dockeryzacja z CUDA 12.4 + cuDNN 9 i GPU/CPU fallback
+- **Architektura modularna**: 13 wyspecjalizowanych modułów dla lepszej organizacji kodu
 - Automatyczny podział długich nagrań na fragmenty (~30 minut)
 - Transkrypcja z wykorzystaniem modelu Whisper (pl, en, i inne języki)
 - Tłumaczenie napisów: polski ↔ angielski (deep-translator + Google Translate)
@@ -26,7 +48,7 @@ Aplikacja pobiera audio z YouTube lub tworzy je z lokalnych plików wideo, przet
 
 ## Dokumentacja deweloperska
 
-- **[Dokumentacja wszystkich funkcji](README_FUNCTIONS.md)** - Szczegółowy opis wszystkich funkcji z kodu źródłowego `transcribe.py`, parametrów, wartości zwracanych i przykładów użycia
+- **[Dokumentacja wszystkich funkcji](README_FUNCTIONS.md)** - Szczegółowy opis wszystkich funkcji z kodu źródłowego, parametrów, wartości zwracanych i przykładów użycia
 
 ## Docker
 
@@ -49,14 +71,35 @@ docker-compose run --rm transcribe "https://www.youtube.com/watch?v=VIDEO_ID"
 
 ```
 PROJEKT_TRANSKRYPCJA/
-├── data/                    # Pliki wejściowe/wyjściowe (volume mount)
-├── Dockerfile
-├── docker-compose.yml
-├── .dockerignore
-├── transcribe.py
-├── requirements.txt
-└── README.md
+├── data/                        # Pliki wejściowe/wyjściowe i kod źródłowy
+│   ├── transcribe.py            # Główny orchestrator CLI (orchestracja pipeline'ów)
+│   ├── output_manager.py        # OutputManager class (formatowanie komunikatów)
+│   ├── command_builders.py      # Budowanie komend FFmpeg/yt-dlp
+│   ├── validators.py            # Walidacja URL/plików/zależności
+│   ├── youtube_processor.py     # Pobieranie z YouTube + ekstrakcja audio
+│   ├── audio_processor.py       # Operacje audio (duration, split)
+│   ├── device_manager.py        # Detekcja GPU/CPU
+│   ├── transcription_engines.py # Silniki transkrypcji (Whisper/Faster/WhisperX)
+│   ├── segment_processor.py     # Dzielenie segmentów, timestampy
+│   ├── translation.py           # Tłumaczenie napisów (Google Translate)
+│   ├── srt_writer.py            # Generowanie plików SRT
+│   ├── tts_generator.py         # Edge TTS + Coqui TTS (dubbing)
+│   ├── audio_mixer.py           # Miksowanie audio, wgrywanie napisów
+│   └── utils.py                 # Czyszczenie plików tymczasowych
+├── docs/                        # Dokumentacja
+│   ├── README_FUNCTIONS.md      # Dokumentacja funkcji
+│   └── README_archive.md        # Archiwum README
+├── specs/                       # Plany i specyfikacje
+│   ├── refactor.md              # Plan refaktoryzacji (13 modułów)
+│   └── plan_docker.md           # Plan dockeryzacji
+├── Dockerfile                   # Definicja obrazu Docker
+├── docker-compose.yml           # Konfiguracja Docker Compose
+├── .dockerignore                # Pliki ignorowane przez Docker
+├── requirements.txt             # Zależności Python (Docker)
+├── requirements-windows.txt     # Zależności Python (Windows)
+└── README.md                    # Ten plik
 ```
+
 
 ### Wymagania Docker
 
@@ -553,7 +596,15 @@ docker-compose run --rm transcribe python -c "import torch; print('GPU:', torch.
 
 ## Historia zmian
 
-### v4.1 (Obecna)
+### v4.2 (Obecna)
+
+- **Refaktoryzacja architektury:** Podział monolitycznego `transcribe.py` (2890 linii) na 13 wyspecjalizowanych modułów
+- **Modularna struktura:** Acykliczny graf zależności (DAG) dla lepszej organizacji kodu
+- **Nowe moduły:** output_manager, command_builders, validators, youtube_processor, audio_processor, device_manager, transcription_engines, segment_processor, translation, srt_writer, tts_generator, audio_mixer, utils
+- **Lepsza czytelność:** Każdy moduł odpowiada za konkretny aspekt aplikacji (separation of concerns)
+- **Łatwiejsze rozwijanie:** Modułowa struktura ułatwia dodawanie nowych funkcji i testowanie
+
+### v4.1
 
 - **Dwa silniki TTS:** Edge TTS (domyślny, cloudowy) i Coqui TTS (lokalny, wysokiej jakości)
 - **Coqui TTS:** Lokalne generowanie dubbingu offline z modelami 100-500MB, opcjonalne GPU
