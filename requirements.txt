@@ -28,14 +28,14 @@ whisperx>=3.1.1,<4.0.0
 
 # =============================================================================
 # PyTorch is installed separately in Dockerfile:
-# pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu126
-# (PyTorch 2.8.0 required by WhisperX, CUDA 12.6 wheel compatible with CUDA 12.4+)
+# pip install torch==2.3.1 torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cu121
+# (PyTorch 2.3.1 required by WhisperX, CUDA 12.1 wheel compatible with CUDA 12.4+)
 # =============================================================================
 
 # =============================================================================
 # Kompatybilnosc z CUDA 12.4 + cuDNN 9 Runtime:
 # - faster-whisper >= 1.1.0 (uses CPU, no CTranslate2 GPU support needed)
-# - openai-whisper >= 20240930 (PyTorch 2.8.0 cu126, GPU support)
-# - WhisperX >= 3.1.1 (PyTorch 2.8.0 cu126, GPU/CPU hybrid, requires torch~=2.8.0)
+# - openai-whisper >= 20240930 (PyTorch 2.3.1 cu121, GPU support)
+# - WhisperX >= 3.1.1 (PyTorch 2.3.1 cu121, GPU/CPU hybrid, requires torch~=2.3.1)
 # - transformers 4.48.0 (pinned for WhisperX Pipeline API compatibility)
 # =============================================================================

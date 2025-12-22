@@ -17,7 +17,8 @@
       "Bash(pip uninstall:*)",
       "WebSearch",
       "Bash(grep:*)",
-      "Bash(docker-compose build:*)"
+      "Bash(docker-compose build:*)",
+      "Bash(cp:*)"
     ],
     "deny": [],
     "ask": []
