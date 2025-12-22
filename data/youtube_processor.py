@@ -8,6 +8,7 @@ import re
 import subprocess
 from pathlib import Path
 from typing import Tuple
+import yt_dlp
 
 from command_builders import (
     build_ytdlp_audio_download_cmd,
@@ -17,6 +18,20 @@ from command_builders import (
     build_ffmpeg_audio_extraction_cmd
 )
 from output_manager import OutputManager
+
+def get_video_title(url: str) -> str:
+    """Pobiera tytuł wideo z YouTube bez pobierania."""
+    try:
+        ydl_opts = {'quiet': True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            title = info.get('title', 'unknown').strip()
+            # Czyszczenie tytułu (usuwanie niedozwolonych znaków)
+            title = re.sub(r'[<>:"/\\|?*]', '_', title)[:200]  # max 200 znaków
+            return title
+    except:
+        return None
+
 
 
 def download_audio(url: str, output_dir: str = ".") -> Tuple[bool, str, str]:
@@ -34,12 +49,19 @@ def download_audio(url: str, output_dir: str = ".") -> Tuple[bool, str, str]:
     output_path.mkdir(parents=True, exist_ok=True)
 
     # Extract video ID for naming
-    video_id_match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', url)
-    if not video_id_match:
-        return False, "Błąd: Nie udało się wyodrębnić ID wideo z URL", ""
+    # video_id_match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', url)
+    # if not video_id_match:
+    #     return False, "Błąd: Nie udało się wyodrębnić ID wideo z URL", ""
 
-    video_id = video_id_match.group(1)
-    audio_file = output_path / f"{video_id}.wav"
+    # video_id = video_id_match.group(1)
+    # audio_file = output_path / f"{video_id}.wav"
+
+    title = get_video_title(url)
+    if not title:
+        video_id = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', url)
+        title = video_id.group(1) if video_id else "audio"
+    audio_file = output_path / f"{title}.wav"
+
 
     try:
         OutputManager.info(f"Pobieranie audio z YouTube... ({url})")
@@ -93,12 +115,19 @@ def download_video(url: str, output_dir: str = ".", quality: str = "1080") -> Tu
     output_path.mkdir(parents=True, exist_ok=True)
 
     # Extract video ID for naming
-    video_id_match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', url)
-    if not video_id_match:
-        return False, "Błąd: Nie udało się wyodrębnić ID wideo z URL", ""
+    # video_id_match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', url)
+    # if not video_id_match:
+    #     return False, "Błąd: Nie udało się wyodrębnić ID wideo z URL", ""
 
-    video_id = video_id_match.group(1)
-    video_file = output_path / f"{video_id}.mp4"
+    # video_id = video_id_match.group(1)
+    # video_file = output_path / f"{video_id}.mp4"
+
+    title = get_video_title(url)
+    if not title:
+        video_id = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', url)
+        title = video_id.group(1) if video_id else "video"
+    video_file = output_path / f"{title}.mp4"
+
 
     try:
         print(f"Pobieranie wideo z YouTube w jakości {quality}p... ({url})")
