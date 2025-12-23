@@ -7,7 +7,7 @@ to SRT subtitle files with proper formatting.
 """
 
 from typing import List, Tuple
-from segment_processor import format_srt_timestamp
+from .segment_processor import format_srt_timestamp
 
 
 def write_srt(segments: List[Tuple[int, int, str]], output_path: str) -> Tuple[bool, str]:

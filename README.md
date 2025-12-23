@@ -8,9 +8,12 @@ Aplikacja pobiera audio z YouTube lub tworzy je z lokalnych plików wideo, przet
 
 ## Architektura modularna
 
-Kod aplikacji został zorganizowany w modularną architekturę składającą się z 15 wyspecjalizowanych modułów:
+Kod aplikacji został zorganizowany w modularną architekturę:
 
+**Główny skrypt** (katalog główny):
 - **transcribe.py** - Główny orchestrator CLI, parsowanie argumentów i orchestracja pipeline'ów
+
+**Moduły pomocnicze** (katalog data/):
 - **output_manager.py** - Klasa OutputManager do formatowania komunikatów (stage headers, info, success, warnings)
 - **command_builders.py** - Budowanie komend FFmpeg i yt-dlp (audio/video extraction, splitting, merging, SRT/ASS support)
 - **validators.py** - Walidacja URL/plików, sprawdzanie zależności (ffmpeg, yt-dlp, TTS engines)
@@ -74,8 +77,8 @@ docker-compose run --rm transcribe "https://www.youtube.com/watch?v=VIDEO_ID"
 
 ```
 PROJEKT_TRANSKRYPCJA/
-├── data/                        # Pliki wejściowe/wyjściowe i kod źródłowy
-│   ├── transcribe.py            # Główny orchestrator CLI (orchestracja pipeline'ów)
+├── transcribe.py                # Główny orchestrator CLI (punkt wejścia)
+├── data/                        # Moduły pomocnicze i pliki wyjściowe
 │   ├── output_manager.py        # OutputManager class (formatowanie komunikatów)
 │   ├── command_builders.py      # Budowanie komend FFmpeg/yt-dlp (SRT/ASS support)
 │   ├── validators.py            # Walidacja URL/plików/zależności
@@ -90,7 +93,8 @@ PROJEKT_TRANSKRYPCJA/
 │   ├── tts_generator.py         # Edge TTS + Coqui TTS (dubbing)
 │   ├── audio_mixer.py           # Miksowanie audio, wgrywanie napisów (SRT/ASS)
 │   ├── warning_suppressor.py    # Tłumienie ostrzeżeń bibliotek trzecich
-│   └── utils.py                 # Czyszczenie plików tymczasowych
+│   ├── utils.py                 # Czyszczenie plików tymczasowych
+│   └── files/                   # Pliki wyjściowe (SRT, MP4, WAV)
 ├── docs/                        # Dokumentacja
 │   ├── README_FUNCTIONS.md      # Dokumentacja funkcji
 │   └── README_archive.md        # Archiwum README

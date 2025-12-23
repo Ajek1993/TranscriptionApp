@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Tuple, List
 from tqdm import tqdm
 
-from command_builders import build_ffprobe_duration_cmd, build_ffmpeg_audio_split_cmd
+from .command_builders import build_ffprobe_duration_cmd, build_ffmpeg_audio_split_cmd
 
 
 def get_audio_duration(wav_path: str) -> Tuple[bool, float]:

@@ -18,8 +18,11 @@ from pathlib import Path
 from typing import Tuple, List
 from tqdm import tqdm
 
-from device_manager import detect_device
-from audio_processor import get_audio_duration
+from .device_manager import detect_device
+from .audio_processor import get_audio_duration
+
+# Na początku pliku, po importach:
+TTS_SLOT_FILL_RATIO = 0.999  # Wypełnienie 99.9% czasu segmentu
 
 # Conditional imports for TTS engines
 try:
@@ -304,8 +307,8 @@ def generate_tts_segments(
 
                     # Check if TTS is too long for the slot and needs to be sped up
                     if tts_duration > slot_duration_sec:
-                        # Target 98% of slot duration to leave a small gap
-                        target_duration_sec = slot_duration_sec * 0.98
+                        # Target % of slot duration to leave a small gap
+                        target_duration_sec = slot_duration_sec * TTS_SLOT_FILL_RATIO
                         speed_multiplier = tts_duration / target_duration_sec
                         speed_multiplier = max(1.0, min(speed_multiplier, 1.5))  # Only speed UP (1.0x-1.5x)
 

@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Tuple
 
-from command_builders import build_ffmpeg_video_merge_cmd, build_ffmpeg_subtitle_burn_cmd
+from .command_builders import build_ffmpeg_video_merge_cmd, build_ffmpeg_subtitle_burn_cmd
 
 
 def mix_audio_tracks(

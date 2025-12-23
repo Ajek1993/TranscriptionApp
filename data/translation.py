@@ -8,7 +8,7 @@ from typing import List, Tuple
 from tqdm import tqdm
 
 # Import TRANSLATOR_AVAILABLE flag from validators
-from validators import TRANSLATOR_AVAILABLE
+from .validators import TRANSLATOR_AVAILABLE
 
 # Conditional import for GoogleTranslator
 try:

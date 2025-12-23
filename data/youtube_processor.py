@@ -10,14 +10,14 @@ from pathlib import Path
 from typing import Tuple
 import yt_dlp
 
-from command_builders import (
+from .command_builders import (
     build_ytdlp_audio_download_cmd,
     build_ytdlp_video_download_cmd,
     build_ffprobe_audio_info_cmd,
     build_ffprobe_video_info_cmd,
     build_ffmpeg_audio_extraction_cmd
 )
-from output_manager import OutputManager
+from .output_manager import OutputManager
 
 def get_video_title(url: str) -> str:
     """Pobiera tytuł wideo z YouTube bez pobierania."""

@@ -25,7 +25,7 @@ if not debug_mode:
     os.environ['PYTHONWARNINGS'] = 'ignore'
 
 # Teraz można importować warning_suppressor
-from warning_suppressor import suppress_third_party_warnings
+from data.warning_suppressor import suppress_third_party_warnings
 suppress_third_party_warnings(debug_mode=debug_mode)
 
 # ===== STANDARDOWE IMPORTY =====
@@ -45,8 +45,8 @@ from queue import Queue
 
 
 # Import from refactored modules
-from output_manager import OutputManager
-from command_builders import (
+from data.output_manager import OutputManager
+from data.command_builders import (
     build_ffprobe_audio_info_cmd,
     build_ffprobe_video_info_cmd,
     build_ffprobe_duration_cmd,
@@ -57,7 +57,7 @@ from command_builders import (
     build_ytdlp_audio_download_cmd,
     build_ytdlp_video_download_cmd
 )
-from validators import (
+from data.validators import (
     validate_youtube_url,
     validate_video_file,
     check_dependencies,
@@ -68,21 +68,21 @@ from validators import (
     EDGE_TTS_AVAILABLE,
     COQUI_TTS_AVAILABLE
 )
-from utils import cleanup_temp_files
-from segment_processor import split_long_segments, fill_timestamp_gaps, format_srt_timestamp
-from srt_writer import write_srt
-from device_manager import detect_device, get_gpu_memory_info, WHISPER_MODEL_MEMORY_REQUIREMENTS
-from audio_processor import get_audio_duration, get_audio_duration_ms, split_audio
-from youtube_processor import download_audio, download_video, extract_audio_from_video
-from translation import translate_segments
-from transcription_engines import transcribe_chunk
-from tts_generator import (
+from data.utils import cleanup_temp_files
+from data.segment_processor import split_long_segments, fill_timestamp_gaps, format_srt_timestamp
+from data.srt_writer import write_srt
+from data.device_manager import detect_device, get_gpu_memory_info, WHISPER_MODEL_MEMORY_REQUIREMENTS
+from data.audio_processor import get_audio_duration, get_audio_duration_ms, split_audio
+from data.youtube_processor import download_audio, download_video, extract_audio_from_video, get_video_title
+from data.translation import translate_segments
+from data.transcription_engines import transcribe_chunk
+from data.tts_generator import (
     generate_tts_segments,
     create_tts_audio_track,
     determine_tts_target_language as tts_determine_language,
     XTTS_SUPPORTED_LANGUAGES as TTS_XTTS_LANGUAGES
 )
-from audio_mixer import mix_audio_tracks, create_dubbed_video, burn_subtitles_to_video
+from data.audio_mixer import mix_audio_tracks, create_dubbed_video, burn_subtitles_to_video
 
 
 # ===== LOGGING SETUP =====
@@ -214,7 +214,8 @@ def run_dubbing_pipeline(
             if not dubbed_audio_filename.endswith('.wav'):
                 dubbed_audio_filename += '.wav'
         else:
-            dubbed_audio_filename = f"{input_stem}_dubbed.wav"
+            output_dir = Path.cwd() / "files"
+            dubbed_audio_filename = str(output_dir / f"{input_stem}_dubbed.wav")
 
         # Copy mixed audio to output
         shutil.copy2(str(mixed_audio_path), dubbed_audio_filename)
@@ -228,7 +229,8 @@ def run_dubbing_pipeline(
             if not dubbed_video_filename.endswith('.mp4'):
                 dubbed_video_filename += '.mp4'
         else:
-            dubbed_video_filename = f"{input_stem}_dubbed.mp4"
+            output_dir = Path.cwd() / "files"
+            dubbed_video_filename = str(output_dir / f"{input_stem}_dubbed.mp4")
 
         success, message = create_dubbed_video(
             original_video_path,
@@ -268,8 +270,9 @@ def generate_srt_output(segments: List[Tuple[int, int, str]], input_stem: str, a
         # Burning subtitles without explicit output - use temp directory
         srt_filename = str(Path(temp_dir) / f"{input_stem}.srt")
     else:
-        # Normal case: write to current directory
-        srt_filename = f"{input_stem}.srt"
+        # Normal case: write to files/ subdirectory
+        output_dir = Path.cwd() / "files"
+        srt_filename = str(output_dir / f"{input_stem}.srt")
 
     # Write SRT file
     success, message = write_srt(segments, srt_filename)
@@ -293,7 +296,7 @@ def generate_dual_language_ass_output(
     Returns:
         Tuple of (success, error_msg, ass_filename)
     """
-    from ass_writer import write_dual_language_ass
+    from data.ass_writer import write_dual_language_ass
 
     OutputManager.stage_header(3, "Generowanie pliku ASS dwujęzycznego")
     print(f"Segmenty oryginalne: {len(original_segments)}")
@@ -350,7 +353,8 @@ def burn_subtitles_to_video_pipeline(original_video_path: str, srt_filename: str
         if not burn_output_filename.endswith('.mp4'):
             burn_output_filename += '.mp4'
     else:
-        burn_output_filename = f"{input_stem}_subtitled.mp4"
+        output_dir = Path.cwd() / "files"
+        burn_output_filename = str(output_dir / f"{input_stem}_subtitled.mp4")
 
     # Burn subtitles
     success, message = burn_subtitles_to_video(
@@ -586,9 +590,12 @@ def _process_youtube_url(url: str, temp_dir: str, args) -> Tuple[bool, str, str,
     if not validate_youtube_url(url):
         return False, "Błąd: Niepoprawny URL YouTube. Podaj link w formacie: https://www.youtube.com/watch?v=VIDEO_ID", "", "", ""
 
-    # Extract video ID for naming
-    video_id_match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', url)
-    input_stem = video_id_match.group(1) if video_id_match else "output"
+    # Extract video title for naming (fallback to video ID)
+    input_stem = get_video_title(url)
+    if not input_stem:
+        # Fallback to video ID if title extraction fails
+        video_id_match = re.search(r'(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)', url)
+        input_stem = video_id_match.group(1) if video_id_match else "output"
 
     video_path = ""
 
@@ -1077,6 +1084,10 @@ def main():
     try:
         temp_dir = tempfile.mkdtemp(prefix="transcribe_")
         print(f"Katalog tymczasowy: {temp_dir}")
+
+        # Create output directory for final files
+        output_dir = Path.cwd() / "files"
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         # Process input source: local file or YouTube URL
         success, error_msg, audio_path, original_video_path, input_stem = process_input_source(args, temp_dir)

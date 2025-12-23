@@ -84,7 +84,8 @@ RUN useradd -m -u 1000 transcriber \
     && chown -R transcriber:transcriber /app /data /models
 
 # Copy application code
-COPY data/transcribe.py .
+COPY transcribe.py .
+COPY data/ ./data/
 
 # Set environment variables for model cache
 ENV HF_HOME=/models
@@ -98,5 +99,5 @@ VOLUME ["/data", "/models"]
 USER transcriber
 
 # Default entrypoint
-ENTRYPOINT ["python", "transcribe.py"]
+ENTRYPOINT ["python", "/app/transcribe.py"]
 CMD ["--help"]

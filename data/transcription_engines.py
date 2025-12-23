@@ -18,8 +18,8 @@ from typing import Tuple, List
 from queue import Queue
 from tqdm import tqdm
 
-from device_manager import detect_device
-from output_manager import OutputManager
+from .device_manager import detect_device
+from .output_manager import OutputManager
 
 
 def _run_transcription_with_timeout(
