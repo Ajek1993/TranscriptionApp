@@ -97,17 +97,39 @@ def build_ffmpeg_video_merge_cmd(
 
 def build_ffmpeg_subtitle_burn_cmd(
     video_path: str,
-    srt_path: str,
+    subtitle_path: str,
     output_path: str,
     subtitle_style: str
 ) -> list:
-    """Build ffmpeg command to burn subtitles into video."""
-    # Convert paths to absolute and escape for ffmpeg
-    srt_path_abs = str(Path(srt_path).resolve())
-    srt_path_filter = srt_path_abs.replace('\\', '/').replace(':', '\\:')
+    """
+    Build ffmpeg command to burn subtitles into video.
 
-    # Build subtitles filter with custom style
-    subtitles_filter = f"subtitles='{srt_path_filter}':force_style='{subtitle_style}':charenc=UTF-8"
+    Supports both SRT and ASS subtitle formats:
+    - SRT files: Applies force_style parameter for custom styling
+    - ASS files: Preserves internal style definitions (no force_style)
+
+    Args:
+        video_path: Path to input video file
+        subtitle_path: Path to subtitle file (.srt or .ass)
+        output_path: Path to output video file
+        subtitle_style: ASS style string (only applied to SRT files)
+
+    Returns:
+        List of command arguments for ffmpeg
+    """
+    # Convert paths to absolute and escape for ffmpeg
+    subtitle_path_abs = str(Path(subtitle_path).resolve())
+    subtitle_path_filter = subtitle_path_abs.replace('\\', '/').replace(':', '\\:')
+
+    # Detect file type and build appropriate filter
+    file_extension = Path(subtitle_path).suffix.lower()
+
+    if file_extension == '.ass':
+        # ASS files: Use internal styles (no force_style)
+        subtitles_filter = f"subtitles='{subtitle_path_filter}':charenc=UTF-8"
+    else:
+        # SRT files (or unknown): Apply custom style
+        subtitles_filter = f"subtitles='{subtitle_path_filter}':force_style='{subtitle_style}':charenc=UTF-8"
 
     return [
         'ffmpeg', '-y',

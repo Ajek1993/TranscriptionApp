@@ -8,11 +8,11 @@ Aplikacja pobiera audio z YouTube lub tworzy je z lokalnych plików wideo, przet
 
 ## Architektura modularna
 
-Kod aplikacji został zorganizowany w modularną architekturę składającą się z 13 wyspecjalizowanych modułów:
+Kod aplikacji został zorganizowany w modularną architekturę składającą się z 15 wyspecjalizowanych modułów:
 
 - **transcribe.py** - Główny orchestrator CLI, parsowanie argumentów i orchestracja pipeline'ów
 - **output_manager.py** - Klasa OutputManager do formatowania komunikatów (stage headers, info, success, warnings)
-- **command_builders.py** - Budowanie komend FFmpeg i yt-dlp (audio/video extraction, splitting, merging)
+- **command_builders.py** - Budowanie komend FFmpeg i yt-dlp (audio/video extraction, splitting, merging, SRT/ASS support)
 - **validators.py** - Walidacja URL/plików, sprawdzanie zależności (ffmpeg, yt-dlp, TTS engines)
 - **youtube_processor.py** - Pobieranie audio/wideo z YouTube, ekstrakcja audio z plików wideo
 - **audio_processor.py** - Operacje na plikach audio (duration, splitting chunks)
@@ -21,8 +21,10 @@ Kod aplikacji został zorganizowany w modularną architekturę składającą si�
 - **segment_processor.py** - Dzielenie długich segmentów, wypełnianie luk, formatowanie timestampów SRT
 - **translation.py** - Tłumaczenie segmentów napisów (Google Translate via deep-translator)
 - **srt_writer.py** - Generowanie plików SRT ze standardowym formatowaniem
+- **ass_writer.py** - Generowanie plików ASS z dwujęzycznymi napisami (oryginał + tłumaczenie)
 - **tts_generator.py** - Generowanie dubbingu TTS (Edge TTS + Coqui TTS), synchronizacja audio
-- **audio_mixer.py** - Miksowanie ścieżek audio, tworzenie wideo z dubbingiem, wgrywanie napisów
+- **audio_mixer.py** - Miksowanie ścieżek audio, tworzenie wideo z dubbingiem, wgrywanie napisów (SRT/ASS)
+- **warning_suppressor.py** - System tłumienia ostrzeżeń bibliotek trzecich (TensorFlow, PyTorch, tokenizers)
 - **utils.py** - Czyszczenie plików tymczasowych
 
 Wszystkie moduły są zorganizowane jako acykliczny graf zależności (DAG), co zapewnia czytelność kodu i łatwość w rozwijaniu aplikacji.
@@ -33,16 +35,17 @@ Wszystkie moduły są zorganizowane jako acykliczny graf zależności (DAG), co 
 - **Pobieranie wideo z YouTube**: Pobieranie pełnego wideo w jakości 720p-4K
 - **Transkrypcja z plików lokalnych**: Obsługa MP4, MKV, AVI, MOV
 - **Dubbing TTS**: Generowanie dubbingu z Microsoft Edge TTS (polskie i angielskie głosy)
-- **Wgrywanie napisów do wideo**: Hardcode subtitles z customizacją stylu (białe napisy, ciemne tło)
+- **Wgrywanie napisów do wideo**: Hardcode subtitles z customizacją stylu (SRT lub ASS)
+- **Napisy dwujęzyczne (ASS)**: Wgrywanie napisów z jednoczesnym wyświetlaniem oryginału i tłumaczenia
 - **Wybór silnika transkrypcji**: OpenAI Whisper (domyślny), Faster-Whisper (CPU), WhisperX (zaawansowany)
 - **Docker**: Pełna dockeryzacja z CUDA 12.4 + cuDNN 9 i GPU/CPU fallback
-- **Architektura modularna**: 13 wyspecjalizowanych modułów dla lepszej organizacji kodu
+- **Architektura modularna**: 15 wyspecjalizowanych modułów dla lepszej organizacji kodu
 - Automatyczny podział długich nagrań na fragmenty (~30 minut)
 - Transkrypcja z wykorzystaniem modelu Whisper (pl, en, i inne języki)
 - Tłumaczenie napisów: polski ↔ angielski (deep-translator + Google Translate)
 - Zaawansowane opcje narratora: kontrola segmentów, wypełnianie luk, pauzy
 - Wsparcie dla GPU (CUDA) i CPU
-- Generowanie pliku SRT zgodnego ze standardem
+- Generowanie plików SRT i ASS zgodnych ze standardem
 - Automatyczne czyszczenie plików tymczasowych
 - Wsparcie dla wielu języków transkrypcji
 
@@ -74,7 +77,7 @@ PROJEKT_TRANSKRYPCJA/
 ├── data/                        # Pliki wejściowe/wyjściowe i kod źródłowy
 │   ├── transcribe.py            # Główny orchestrator CLI (orchestracja pipeline'ów)
 │   ├── output_manager.py        # OutputManager class (formatowanie komunikatów)
-│   ├── command_builders.py      # Budowanie komend FFmpeg/yt-dlp
+│   ├── command_builders.py      # Budowanie komend FFmpeg/yt-dlp (SRT/ASS support)
 │   ├── validators.py            # Walidacja URL/plików/zależności
 │   ├── youtube_processor.py     # Pobieranie z YouTube + ekstrakcja audio
 │   ├── audio_processor.py       # Operacje audio (duration, split)
@@ -83,14 +86,16 @@ PROJEKT_TRANSKRYPCJA/
 │   ├── segment_processor.py     # Dzielenie segmentów, timestampy
 │   ├── translation.py           # Tłumaczenie napisów (Google Translate)
 │   ├── srt_writer.py            # Generowanie plików SRT
+│   ├── ass_writer.py            # Generowanie plików ASS (dual-language)
 │   ├── tts_generator.py         # Edge TTS + Coqui TTS (dubbing)
-│   ├── audio_mixer.py           # Miksowanie audio, wgrywanie napisów
+│   ├── audio_mixer.py           # Miksowanie audio, wgrywanie napisów (SRT/ASS)
+│   ├── warning_suppressor.py    # Tłumienie ostrzeżeń bibliotek trzecich
 │   └── utils.py                 # Czyszczenie plików tymczasowych
 ├── docs/                        # Dokumentacja
 │   ├── README_FUNCTIONS.md      # Dokumentacja funkcji
 │   └── README_archive.md        # Archiwum README
 ├── specs/                       # Plany i specyfikacje
-│   ├── refactor.md              # Plan refaktoryzacji (13 modułów)
+│   ├── refactor.md              # Plan refaktoryzacji (15 modułów)
 │   └── plan_docker.md           # Plan dockeryzacji
 ├── Dockerfile                   # Definicja obrazu Docker
 ├── docker-compose.yml           # Konfiguracja Docker Compose
@@ -322,7 +327,49 @@ python transcribe.py --local "film.mp4" --burn-subtitles \
   --subtitle-style "FontName=Arial,FontSize=28,PrimaryColour=&H0000FFFF"
 ```
 
-### 7. Wybór modelu Whisper
+### 7. Napisy dwujęzyczne (Dual-Language Subtitles)
+
+**Angielski film → Napisy angielskie + polskie jednocześnie:**
+```bash
+# Docker
+docker-compose run --rm transcribe "URL" \
+  --language en \
+  --translate en-pl \
+  --burn-subtitles \
+  --dual-language
+
+# Natywnie
+python transcribe.py "URL" \
+  --language en \
+  --translate en-pl \
+  --burn-subtitles \
+  --dual-language
+# Wynik: VIDEO_ID_subtitled.mp4 z napisami ASS (żółty angielski u góry + biały polski na dole)
+```
+
+**Polski film → Napisy polskie + angielskie:**
+```bash
+# Docker
+docker-compose run --rm transcribe --local /data/film.mp4 \
+  --language pl \
+  --translate pl-en \
+  --burn-subtitles \
+  --dual-language
+
+# Natywnie
+python transcribe.py --local "film.mp4" \
+  --language pl \
+  --translate pl-en \
+  --burn-subtitles \
+  --dual-language
+# Wynik: film_subtitled.mp4 z dwujęzycznymi napisami
+```
+
+**Uwaga:** Flaga `--dual-language` wymaga użycia `--translate` i `--burn-subtitles`. Generuje plik ASS z:
+- Oryginalnymi napisami (żółty tekst, u góry ekranu)
+- Przetłumaczonymi napisami (biały tekst, na dole ekranu)
+
+### 8. Wybór modelu Whisper
 
 ```bash
 # Docker - szybki model (najszybszy, mniej dokładny)
@@ -504,7 +551,7 @@ python transcribe.py "URL" --dub --tts-engine coqui --coqui-model tts_models/pl/
 | **Edge TTS** | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ | ❌ | 2 głosy | ❌ | 0 MB (cloud) |
 | **Coqui TTS** | ⭐⭐⭐⭐⭐ | ⚡⚡ | ✅ | 40+ | Opcjonalnie | 100-500 MB |
 
-### 8. Starsze opcje silnika transkrypcji
+### 9. Starsze opcje silnika transkrypcji
 
 ```bash
 # Docker - openai-whisper (domyślny)
@@ -517,7 +564,7 @@ docker-compose run --rm transcribe "URL" --engine faster-whisper
 python transcribe.py "URL" --engine whisper
 ```
 
-### 9. Wymuszone CPU (bez GPU)
+### 10. Wymuszone CPU (bez GPU)
 
 ```bash
 # Docker - wyłącz GPU
@@ -526,7 +573,7 @@ docker-compose run --rm -e CUDA_VISIBLE_DEVICES="" transcribe "URL"
 # Przydatne gdy GPU jest zajęte lub ma problemy
 ```
 
-### 10. Zaawansowane opcje dubbingu
+### 11. Zaawansowane opcje dubbingu
 
 **Kontrola segmentacji narratora:**
 ```bash
@@ -544,7 +591,7 @@ python transcribe.py "URL" --dub \
 # Przydatne dla szybkiej mowy lub dialogów
 ```
 
-### 11. Własne nazwy plików wyjściowych
+### 12. Własne nazwy plików wyjściowych
 
 ```bash
 # Docker - własna nazwa SRT
@@ -563,7 +610,7 @@ python transcribe.py "URL" --dub --dub-output dubbed.mp4
 python transcribe.py --local "film.mp4" --burn-subtitles --burn-output output.mp4
 ```
 
-### 12. Pomoc i debugowanie
+### 13. Pomoc i debugowanie
 
 ```bash
 # Docker - wyświetl wszystkie opcje
@@ -590,13 +637,26 @@ docker-compose run --rm transcribe python -c "import torch; print('GPU:', torch.
 | **Dubbing** | `docker-compose run --rm transcribe "URL" --dub` |
 | **Dubbing audio-only** | `docker-compose run --rm transcribe "URL" --dub-audio-only` |
 | **Wgraj napisy** | `docker-compose run --rm transcribe --local /data/video.mp4 --burn-subtitles` |
+| **Napisy dwujęzyczne** | `docker-compose run --rm transcribe "URL" --language en --translate en-pl --burn-subtitles --dual-language` |
 | **Inny model** | `docker-compose run --rm transcribe "URL" --model medium` |
+| **Napisy dwujęzyczne** |  |
 | **Bez GPU** | `docker-compose run --rm -e CUDA_VISIBLE_DEVICES="" transcribe "URL"` |
 | **Pomoc** | `docker-compose run --rm transcribe --help` |
 
 ## Historia zmian
 
-### v4.2 (Obecna)
+### v4.3 (Obecna)
+
+- **Napisy dwujęzyczne (ASS):** Nowa funkcjonalność `--dual-language` do wgrywania napisów z jednoczesnym wyświetlaniem oryginału i tłumaczenia
+- **Format ASS:** Wsparcie dla plików ASS (Advanced SubStation Alpha) obok SRT
+- **Nowe moduły:** ass_writer.py (generowanie dwujęzycznych napisów ASS), warning_suppressor.py (tłumienie ostrzeżeń bibliotek)
+- **Rozszerzenie architektury:** 13 → 15 wyspecjalizowanych modułów
+- **Ulepszone command_builders:** Automatyczne wykrywanie formatu napisów (SRT/ASS) i odpowiednie przetwarzanie w FFmpeg
+- **Ulepszone audio_mixer:** Uniwersalna obsługa plików napisów (SRT i ASS) przy wgrywaniu do wideo
+- Argument CLI: `--dual-language` (wymaga `--translate` i `--burn-subtitles`)
+- Dwujęzyczne napisy ASS: żółty oryginał u góry ekranu + białe tłumaczenie na dole
+
+### v4.2
 
 - **Refaktoryzacja architektury:** Podział monolitycznego `transcribe.py` (2890 linii) na 13 wyspecjalizowanych modułów
 - **Modularna struktura:** Acykliczny graf zależności (DAG) dla lepszej organizacji kodu

@@ -9,9 +9,28 @@ MVP Stage 5: Complete pipeline with CLI and automatic cleanup
 MVP Stage 6: TTS dubbing with Edge TTS
 """
 
+# ===== WARNING SUPPRESSION (MUST BE FIRST) =====
+# Musi być przed jakimikolwiek importami modułów, aby zmienne środowiskowe
+# zostały ustawione przed załadowaniem bibliotek (torch, tensorflow, itp.)
+import sys
+import os
+
+# Wczesne wykrycie flagi --debug
+debug_mode = '--debug' in sys.argv
+
+# Ustawienie zmiennych środowiskowych przed importami
+if not debug_mode:
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+    os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+    os.environ['PYTHONWARNINGS'] = 'ignore'
+
+# Teraz można importować warning_suppressor
+from warning_suppressor import suppress_third_party_warnings
+suppress_third_party_warnings(debug_mode=debug_mode)
+
+# ===== STANDARDOWE IMPORTY =====
 import re
 import subprocess
-import sys
 import argparse
 import json
 import tempfile
@@ -261,6 +280,42 @@ def generate_srt_output(segments: List[Tuple[int, int, str]], input_stem: str, a
     return True, "", srt_filename
 
 
+def generate_dual_language_ass_output(
+    original_segments: List[Tuple[int, int, str]],
+    translated_segments: List[Tuple[int, int, str]],
+    input_stem: str,
+    args,
+    temp_dir: str
+) -> Tuple[bool, str, str]:
+    """
+    Generate dual-language ASS file from original and translated segments.
+
+    Returns:
+        Tuple of (success, error_msg, ass_filename)
+    """
+    from ass_writer import write_dual_language_ass
+
+    OutputManager.stage_header(3, "Generowanie pliku ASS dwujęzycznego")
+    print(f"Segmenty oryginalne: {len(original_segments)}")
+    print(f"Segmenty przetłumaczone: {len(translated_segments)}")
+
+    # ASS always in temp_dir (for burning)
+    ass_filename = str(Path(temp_dir) / f"{input_stem}_dual.ass")
+
+    # Write ASS file
+    success, message = write_dual_language_ass(
+        original_segments,
+        translated_segments,
+        ass_filename
+    )
+
+    if not success:
+        return False, message, ""
+
+    print(message)
+    return True, "", ass_filename
+
+
 # ===== SUBTITLE BURNING PIPELINE =====
 
 def burn_subtitles_to_video_pipeline(original_video_path: str, srt_filename: str, input_stem: str, args, temp_dir: str) -> Tuple[bool, str]:
@@ -437,7 +492,7 @@ def _translate_segments_if_requested(segments: List[Tuple[int, int, str]], args)
     return True, "", translated_segments
 
 
-def run_transcription_pipeline(audio_path: str, args, temp_dir: str) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
+def run_transcription_pipeline(audio_path: str, args, temp_dir: str) -> Tuple[bool, str, List[Tuple[int, int, str]], List[Tuple[int, int, str]]]:
     """
     Run complete transcription pipeline.
 
@@ -449,12 +504,14 @@ def run_transcription_pipeline(audio_path: str, args, temp_dir: str) -> Tuple[bo
     - Translation (if requested)
 
     Returns:
-        Tuple of (success, error_msg, segments)
+        Tuple of (success, error_msg, original_segments, translated_segments)
+        - For non-dual-language mode: original_segments will be empty []
+        - For dual-language mode: both lists will be populated
     """
     # Stage 2: Split audio into chunks
     success, message, chunk_paths = split_audio(audio_path, output_dir=temp_dir)
     if not success:
-        return False, message, []
+        return False, message, [], []
 
     print(message)
 
@@ -465,23 +522,31 @@ def run_transcription_pipeline(audio_path: str, args, temp_dir: str) -> Tuple[bo
             dest_path = Path.cwd() / chunk_file.name
             shutil.copy2(chunk_path, dest_path)
             print(f"Chunk skopiowany do: {dest_path}")
-        return False, "ONLY_CHUNK_MODE", []
+        return False, "ONLY_CHUNK_MODE", [], []
 
     # Stage 3: Transcribe all chunks
     success, message, all_segments = _transcribe_all_chunks(chunk_paths, args, force_device=args.device)
     if not success:
-        return False, message, []
+        return False, message, [], []
+
+    # Preserve original segments for dual-language mode
+    original_segments = all_segments.copy() if args.dual_language else []
 
     # Translation step (if requested)
-    success, message, all_segments = _translate_segments_if_requested(all_segments, args)
+    success, message, translated_segments = _translate_segments_if_requested(all_segments, args)
     if not success:
-        return False, message, []
+        return False, message, [], []
 
     if args.only_transcribe:
         print(f"\nŁącznie transkrybowanych segmentów: {len(all_segments)}")
-        return False, "ONLY_TRANSCRIBE_MODE", []
+        return False, "ONLY_TRANSCRIBE_MODE", [], []
 
-    return True, "", all_segments
+    # Return both sets for dual-language, or translated/original for normal mode
+    if args.dual_language:
+        return True, "", original_segments, translated_segments
+    else:
+        # Backward compatibility: return translated (or original if no translation) in second position
+        return True, "", translated_segments, []
 
 
 # ===== INPUT SOURCE PROCESSING =====
@@ -914,6 +979,9 @@ def main():
                     help='Styl napisów ASS (domyślnie: biały tekst, półprzezroczyste ciemne tło)')
     dubbing_group.add_argument('--burn-output', type=str,
                    help='Nazwa pliku wyjściowego z napisami (domyślnie: {video_id}_subtitled.mp4)')
+    dubbing_group.add_argument('--dual-language', action='store_true',
+                   help='Wypal napisy dwujęzyczne (żółty oryginał + białe tłumaczenie). '
+                        'Wymaga: --translate i --burn-subtitles')
 
     # ===== OPCJE ZAAWANSOWANE =====
     advanced_group = parser.add_argument_group('Opcje zaawansowane', 'Zaawansowana konfiguracja i opcje developerskie')
@@ -962,6 +1030,15 @@ def main():
 
     if args.test_merge:
         return handle_test_merge_mode(args)
+
+    # Validate --dual-language requirements
+    if args.dual_language:
+        if not args.translate:
+            print("Błąd: --dual-language wymaga --translate")
+            return 1
+        if not args.burn_subtitles:
+            print("Błąd: --dual-language wymaga --burn-subtitles")
+            return 1
 
     # Check input source (YouTube URL or local file)
     if not args.url and not args.local:
@@ -1016,7 +1093,7 @@ def main():
             return 0
 
         # Run transcription pipeline (handles audio splitting, transcription, translation)
-        success, error_msg, all_segments = run_transcription_pipeline(audio_path, args, temp_dir)
+        success, error_msg, original_segments, translated_segments = run_transcription_pipeline(audio_path, args, temp_dir)
         if not success:
             # Special exit codes for --only-chunk and --only-transcribe modes
             if error_msg in ["ONLY_CHUNK_MODE", "ONLY_TRANSCRIBE_MODE"]:
@@ -1024,8 +1101,27 @@ def main():
             print(error_msg)
             return 1
 
-        # Generate SRT file
-        success, error_msg, srt_filename = generate_srt_output(all_segments, input_stem, args, temp_dir)
+        # Determine which segments to use for single-language operations (backward compatibility)
+        final_segments = translated_segments if translated_segments else original_segments
+        subtitle_filename = ""
+
+        # Generate subtitles: ASS for dual-language, SRT otherwise
+        if args.dual_language:
+            success, error_msg, subtitle_filename = generate_dual_language_ass_output(
+                original_segments,
+                translated_segments,
+                input_stem,
+                args,
+                temp_dir
+            )
+        else:
+            success, error_msg, subtitle_filename = generate_srt_output(
+                final_segments,
+                input_stem,
+                args,
+                temp_dir
+            )
+
         if not success:
             print(error_msg)
             return 1
@@ -1034,7 +1130,7 @@ def main():
         if args.burn_subtitles:
             success, error_msg = burn_subtitles_to_video_pipeline(
                 original_video_path,
-                srt_filename,
+                subtitle_filename,  # Can be SRT or ASS - FFmpeg handles both
                 input_stem,
                 args,
                 temp_dir
@@ -1046,7 +1142,7 @@ def main():
         # TTS Dubbing if requested
         if args.dub or args.dub_audio_only:
             success, error_msg = run_dubbing_pipeline(
-                all_segments,
+                final_segments,
                 audio_path,
                 original_video_path,
                 input_stem,

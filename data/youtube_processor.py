@@ -22,7 +22,11 @@ from output_manager import OutputManager
 def get_video_title(url: str) -> str:
     """Pobiera tytuł wideo z YouTube bez pobierania."""
     try:
-        ydl_opts = {'quiet': True}
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,  # Tłumi wewnętrzne ostrzeżenia yt-dlp
+            'ignoreerrors': True  # Ignoruje błędy cicho
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             title = info.get('title', 'unknown').strip()

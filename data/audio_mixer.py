@@ -147,18 +147,22 @@ def create_dubbed_video(
 
 def burn_subtitles_to_video(
     video_path: str,
-    srt_path: str,
+    subtitle_path: str,
     output_path: str,
     subtitle_style: str = "FontName=Arial,FontSize=16,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,BorderStyle=4,Outline=0,Shadow=0,MarginV=20"
 ) -> Tuple[bool, str]:
     """
     Burn (hardcode) subtitles into video permanently.
 
+    Supports both SRT and ASS subtitle formats:
+    - SRT files use the provided subtitle_style parameter
+    - ASS files preserve their internal style definitions
+
     Args:
         video_path: Path to input video file
-        srt_path: Path to SRT subtitle file
+        subtitle_path: Path to subtitle file (.srt or .ass)
         output_path: Path to save output video with burned subtitles
-        subtitle_style: ASS subtitle style string
+        subtitle_style: ASS subtitle style string (only applied to SRT files)
 
     Returns:
         Tuple of (success: bool, message: str)
@@ -168,14 +172,14 @@ def burn_subtitles_to_video(
         if not Path(video_path).exists():
             return False, f"Błąd: Plik wideo nie istnieje: {video_path}"
 
-        if not Path(srt_path).exists():
-            return False, f"Błąd: Plik SRT nie istnieje: {srt_path}"
+        if not Path(subtitle_path).exists():
+            return False, f"Błąd: Plik napisów nie istnieje: {subtitle_path}"
 
         print(f"Wgrywanie napisów do wideo...")
         print(f"Wideo: {video_path}")
-        print(f"Napisy: {srt_path}")
+        print(f"Napisy: {subtitle_path}")
 
-        cmd = build_ffmpeg_subtitle_burn_cmd(video_path, srt_path, output_path, subtitle_style)
+        cmd = build_ffmpeg_subtitle_burn_cmd(video_path, subtitle_path, output_path, subtitle_style)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
 
         if result.returncode != 0:
