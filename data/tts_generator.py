@@ -15,7 +15,7 @@ import asyncio
 import subprocess
 import time
 from pathlib import Path
-from typing import Tuple, List
+from typing import Tuple, List, NamedTuple
 from tqdm import tqdm
 
 from .device_manager import detect_device
@@ -45,6 +45,28 @@ XTTS_SUPPORTED_LANGUAGES = [
     "en", "es", "fr", "de", "it", "pt", "pl",
     "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko"
 ]
+
+
+class SegmentTiming(NamedTuple):
+    """
+    Rozszerzona struktura timing info dla segmentów TTS.
+
+    Attributes:
+        original_start_ms: Oryginalny timestamp początku (dla napisów SRT/ASS)
+        original_end_ms: Oryginalny timestamp końca (dla napisów SRT/ASS)
+        adjusted_start_ms: Przesunięty timestamp początku (dla audio TTS)
+        adjusted_end_ms: Przesunięty timestamp końca (dla audio TTS)
+        tts_file: Ścieżka do pliku TTS
+        tts_duration_sec: Rzeczywista długość TTS
+        shift_ms: Wartość przesunięcia względem oryginału (dla raportowania)
+    """
+    original_start_ms: int
+    original_end_ms: int
+    adjusted_start_ms: int
+    adjusted_end_ms: int
+    tts_file: str
+    tts_duration_sec: float
+    shift_ms: int
 
 
 def determine_tts_target_language(
@@ -295,9 +317,18 @@ def generate_tts_segments(
     with tqdm(total=len(segments), desc="Generating TTS", unit="seg") as pbar:
         for idx, (start_ms, end_ms, text) in enumerate(segments):
             # Skip empty text
-            if not text.strip():
+            # Bezpieczne czyszczenie tekstu
+            if text is None:
+                cleaned_text = ""
+            else:
+                cleaned_text = str(text).strip()
+
+            # Skip empty text (po strip)
+            if not cleaned_text:
                 pbar.update(1)
                 continue
+
+            text = cleaned_text
 
             # Pobierz obliczone gap'y dla tego segmentu
             gap_info = segment_gaps[idx]
@@ -410,31 +441,114 @@ def generate_tts_segments(
     return True, f"Wygenerowano {len(tts_files)} plików TTS", tts_files
 
 
-def create_tts_audio_track(
+def adjust_timestamps_for_overflow(
     tts_files: List[Tuple[int, int, str, float]],
+    min_pause_ms: int = MIN_PAUSE_BEFORE_NEXT_MS
+) -> List[SegmentTiming]:
+    """
+    Dynamicznie przesuwa timestampy dla segmentów TTS z overflow.
+
+    Algorytm kaskadowy:
+    - Gdy TTS nie mieści się w slocie - przesuwa wszystkie następne segmenty
+    - Przy dużej ciszy - automatyczny powrót do oryginalnych timestampów
+    - Minimalna pauza (MIN_PAUSE) zawsze zachowana
+
+    Args:
+        tts_files: Lista (original_start_ms, original_end_ms, tts_file, tts_duration_sec)
+        min_pause_ms: Minimalna cisza przed następnym segmentem (domyślnie 50ms)
+
+    Returns:
+        Lista SegmentTiming z oryginalnymi + adjusted timestampami
+    """
+    if not tts_files:
+        return []
+
+    result = []
+    cumulative_shift_ms = 0
+
+    for idx, (orig_start_ms, orig_end_ms, tts_file, tts_duration_sec) in enumerate(tts_files):
+        tts_duration_ms = int(tts_duration_sec * 1000)
+
+        # Zastosuj cumulative shift z poprzednich segmentów
+        adjusted_start_ms = orig_start_ms + cumulative_shift_ms
+        adjusted_end_ms = adjusted_start_ms + tts_duration_ms
+
+        # Sprawdź czy można zmniejszyć shift lub czy trzeba zwiększyć
+        if idx < len(tts_files) - 1:
+            next_orig_start_ms = tts_files[idx + 1][0]
+
+            # KROK 1: Sprawdź shift reduction (powrót do oryginału przy ciszy)
+            if cumulative_shift_ms > 0:
+                # Oblicz dostępny gap z uwzględnieniem obecnego shift
+                available_gap_ms = next_orig_start_ms - adjusted_end_ms
+
+                if available_gap_ms > min_pause_ms:
+                    # Mamy wystarczającą ciszę - możemy zmniejszyć shift
+                    max_shift_reduction_ms = available_gap_ms - min_pause_ms
+                    shift_reduction_ms = min(cumulative_shift_ms, max_shift_reduction_ms)
+
+                    if shift_reduction_ms > 0:
+                        cumulative_shift_ms -= shift_reduction_ms
+                        print(f"  Segment {idx}: Powrót do oryginalnych timestampów (-{shift_reduction_ms}ms)")
+
+                        # Przelicz adjusted timestamps po redukcji
+                        adjusted_start_ms = orig_start_ms + cumulative_shift_ms
+                        adjusted_end_ms = adjusted_start_ms + tts_duration_ms
+
+            # KROK 2: Sprawdź overflow (czy trzeba zwiększyć shift)
+            next_adjusted_start_ms = next_orig_start_ms + cumulative_shift_ms
+            required_next_start_ms = adjusted_end_ms + min_pause_ms
+
+            if required_next_start_ms > next_adjusted_start_ms:
+                additional_shift_ms = required_next_start_ms - next_adjusted_start_ms
+                cumulative_shift_ms += additional_shift_ms
+                print(f"  Segment {idx}: TTS overflow (+{additional_shift_ms}ms shift dla następnych)")
+
+        segment_shift_ms = adjusted_start_ms - orig_start_ms
+        timing = SegmentTiming(
+            original_start_ms=orig_start_ms,
+            original_end_ms=orig_end_ms,
+            adjusted_start_ms=adjusted_start_ms,
+            adjusted_end_ms=adjusted_end_ms,
+            tts_file=tts_file,
+            tts_duration_sec=tts_duration_sec,
+            shift_ms=segment_shift_ms
+        )
+        result.append(timing)
+
+    # WARNING dla dużych przesunięć
+    if cumulative_shift_ms > 10000:
+        print(f"WARNING: Duże przesunięcie timestampów (+{cumulative_shift_ms}ms)!")
+        print("  TTS może znacząco wyprzedzić oryginalne napisy.")
+
+    return result
+
+
+def create_tts_audio_track(
+    segment_timings: List[SegmentTiming],
     total_duration_ms: int,
     output_path: str
 ) -> Tuple[bool, str]:
     """
-    Combine TTS segments into a single audio track using concat demuxer.
-    This avoids amix completely and ensures constant volume.
+    Combine TTS segments into a single audio track using adjusted timestamps.
+    Uses Dynamic Timestamp Shifting for proper synchronization.
 
     Args:
-        tts_files: List of (start_ms, end_ms, file_path, actual_duration_sec) tuples
-        total_duration_ms: Total duration of the final track in milliseconds
+        segment_timings: List of SegmentTiming with adjusted timestamps
+        total_duration_ms: Total duration of the final track (including shifts)
         output_path: Path to save the combined audio
 
     Returns:
         Tuple of (success: bool, message: str)
     """
     try:
-        if not tts_files:
+        if not segment_timings:
             return False, "Błąd: Brak plików TTS do połączenia"
 
         temp_dir = Path(output_path).parent
 
-        # Sort segments by start time
-        sorted_segments = sorted(tts_files, key=lambda x: x[0])
+        # Sort segments by adjusted start time
+        sorted_segments = sorted(segment_timings, key=lambda x: x.adjusted_start_ms)
 
         # Build filter_complex that creates silence gaps and concatenates
         filter_parts = []
@@ -443,7 +557,12 @@ def create_tts_audio_track(
 
         current_time_ms = 0
 
-        for idx, (start_ms, end_ms, file_path, actual_duration_sec) in enumerate(sorted_segments):
+        for idx, timing in enumerate(sorted_segments):
+            # Wyciągnij dane z SegmentTiming (używamy adjusted timestamps)
+            start_ms = timing.adjusted_start_ms
+            file_path = timing.tts_file
+            actual_duration_sec = timing.tts_duration_sec
+
             # Add input file
             input_args.extend(['-i', str(file_path)])
 

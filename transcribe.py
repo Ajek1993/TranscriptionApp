@@ -79,6 +79,7 @@ from data.transcription_engines import transcribe_chunk
 from data.tts_generator import (
     generate_tts_segments,
     create_tts_audio_track,
+    adjust_timestamps_for_overflow,
     determine_tts_target_language as tts_determine_language,
     XTTS_SUPPORTED_LANGUAGES as TTS_XTTS_LANGUAGES
 )
@@ -174,16 +175,32 @@ def run_dubbing_pipeline(
 
     print(message)
 
+    # Dynamic Timestamp Shifting - oblicz adjusted timestamps
+    print("Obliczanie dynamicznych przesunięć timestampów...")
+    segment_timings = adjust_timestamps_for_overflow(tts_files)
+
+    # Raportuj przesunięcia
+    total_shift_ms = segment_timings[-1].shift_ms if segment_timings else 0
+    if total_shift_ms > 0:
+        print(f"  Łączne przesunięcie: +{total_shift_ms}ms ({total_shift_ms/1000:.2f}s)")
+        shifted_count = sum(1 for t in segment_timings if t.shift_ms > 0)
+        print(f"  Przesunięte segmenty: {shifted_count}/{len(segment_timings)}")
+    else:
+        print("  Brak przesunięć - wszystkie TTS mieszczą się w slotach")
+
     # Get total duration of original audio
     success, total_duration_ms = get_audio_duration_ms(audio_path)
     if not success:
         return False, "Błąd: Nie można odczytać długości audio"
 
-    # Combine TTS segments into single track
+    # Rozszerz total duration o przesunięcia
+    adjusted_total_duration_ms = total_duration_ms + total_shift_ms
+
+    # Combine TTS segments into single track (z adjusted timestamps)
     tts_combined_path = Path(temp_dir) / "tts_combined.wav"
     success, message = create_tts_audio_track(
-        tts_files,
-        total_duration_ms,
+        segment_timings,
+        adjusted_total_duration_ms,
         str(tts_combined_path)
     )
 
