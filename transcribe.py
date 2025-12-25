@@ -562,19 +562,21 @@ def _process_local_file(file_path: str, temp_dir: str) -> Tuple[bool, str, str, 
     Returns:
         Tuple of (success, error_msg, audio_path, video_path, input_stem)
     """
-    is_valid, error_msg = validate_video_file(file_path)
+    is_valid, msg_or_path = validate_video_file(file_path)
     if not is_valid:
-        return False, error_msg, "", "", ""
+        return False, msg_or_path, "", "", ""  # msg_or_path is error message
 
-    video_path = file_path
+    # msg_or_path is now the absolute path to the validated file
+    resolved_path = msg_or_path
+    video_path = resolved_path
 
     # Extract audio from local video
-    success, message, audio_path = extract_audio_from_video(file_path, output_dir=temp_dir)
+    success, message, audio_path = extract_audio_from_video(resolved_path, output_dir=temp_dir)
     if not success:
         return False, message, "", "", ""
 
     print(message)
-    input_stem = Path(file_path).stem
+    input_stem = Path(resolved_path).stem
 
     return True, "", audio_path, video_path, input_stem
 
@@ -665,10 +667,13 @@ def handle_video_download_mode(args) -> int:
         "Jakość": f"{args.video_quality}p"
     })
 
-    # Download to current directory
+    # Download to files directory
+    output_dir = Path.cwd() / "files"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     success, message, video_path = download_video(
         args.download,
-        output_dir=".",
+        output_dir=str(output_dir),
         quality=args.video_quality
     )
 
@@ -698,10 +703,13 @@ def handle_audio_download_mode(args) -> int:
         "Jakość": args.audio_quality
     })
 
-    # Download to current directory
+    # Download to files directory
+    output_dir = Path.cwd() / "files"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     success, message, audio_path = download_audio(
         args.download_audio_only,
-        output_dir="."
+        output_dir=str(output_dir)
     )
 
     if not success:

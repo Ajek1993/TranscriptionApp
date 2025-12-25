@@ -11,6 +11,9 @@ from typing import Tuple
 # Supported video formats for local files
 SUPPORTED_VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov'}
 
+# Default output directory for downloads and generated files
+FILES_DIR = Path.cwd() / "files"
+
 # Translation support
 try:
     from deep_translator import GoogleTranslator
@@ -52,22 +55,43 @@ def validate_video_file(file_path: str) -> Tuple[bool, str]:
     """
     Validate that the provided path is a valid, supported video file.
 
+    Automatically searches in "files" folder if file not found at provided path.
+
     Args:
-        file_path: Path to the video file
+        file_path: Path to the video file (can be absolute, relative, or just filename)
 
     Returns:
-        Tuple of (is_valid: bool, error_message: str)
+        Tuple of (is_valid: bool, message_or_path: str)
+        - If valid: (True, absolute_path_to_file)
+        - If invalid: (False, error_message)
     """
+    # Try original path first (backward compatibility)
     path = Path(file_path)
 
-    if not path.exists():
+    if path.exists():
+        # Found at provided path - validate extension
+        if path.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS:
+            supported = ', '.join(SUPPORTED_VIDEO_EXTENSIONS)
+            return False, f"Błąd: Nieobsługiwany format. Wspierane: {supported}"
+        return True, str(path.absolute())
+
+    # If not found and not an absolute path, try "files" folder
+    if not path.is_absolute():
+        files_path = FILES_DIR / file_path
+        if files_path.exists():
+            # Found in files folder - validate extension
+            if files_path.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS:
+                supported = ', '.join(SUPPORTED_VIDEO_EXTENSIONS)
+                return False, f"Błąd: Nieobsługiwany format. Wspierane: {supported}"
+            return True, str(files_path.absolute())
+
+    # Not found in either location - provide helpful error
+    if not path.is_absolute():
+        return False, (f"Błąd: Plik nie istnieje.\n"
+                      f"  Sprawdzono: {path.absolute()}\n"
+                      f"  Sprawdzono: {FILES_DIR / file_path}")
+    else:
         return False, f"Błąd: Plik nie istnieje: {file_path}"
-
-    if path.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS:
-        supported = ', '.join(SUPPORTED_VIDEO_EXTENSIONS)
-        return False, f"Błąd: Nieobsługiwany format. Wspierane: {supported}"
-
-    return True, "OK"
 
 
 def check_dependencies() -> Tuple[bool, str]:
