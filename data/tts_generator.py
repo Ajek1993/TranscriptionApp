@@ -24,6 +24,10 @@ from .audio_processor import get_audio_duration
 # Na początku pliku, po importach:
 TTS_SLOT_FILL_RATIO = 0.999  # Wypełnienie 99.9% czasu segmentu
 
+# Gap Extension Configuration
+MIN_PAUSE_BEFORE_NEXT_MS = 50   # Minimalna cisza przed następnym segmentem (50ms)
+MAX_GAP_EXTENSION_RATIO = 0.99    # Użyj max 99% dostępnego gap'u
+
 # Conditional imports for TTS engines
 try:
     import edge_tts
@@ -262,6 +266,32 @@ def generate_tts_segments(
 
     print(f"Generowanie TTS dla {len(segments)} segmentów (engine: {engine})...")
 
+    # Preprocessing: oblicz dostępne gap'y dla każdego segmentu (Gap Extension)
+    segment_gaps = []
+    for idx in range(len(segments)):
+        start_ms, end_ms, text = segments[idx]
+        slot_duration_ms = end_ms - start_ms
+
+        # Oblicz dostępny gap do następnego segmentu
+        if idx < len(segments) - 1:
+            next_start_ms = segments[idx + 1][0]
+            available_gap_ms = max(0, next_start_ms - end_ms)
+        else:
+            available_gap_ms = 0  # Ostatni segment - brak gap'u
+
+        # Oblicz ile gap'u możemy wykorzystać (zachowaj MIN_PAUSE_BEFORE_NEXT_MS)
+        usable_gap_ms = max(0, available_gap_ms - MIN_PAUSE_BEFORE_NEXT_MS)
+
+        # Oblicz rozszerzony slot (wykorzystaj część gap'u)
+        extended_slot_ms = slot_duration_ms + int(usable_gap_ms * MAX_GAP_EXTENSION_RATIO)
+
+        segment_gaps.append({
+            'slot_duration_ms': slot_duration_ms,
+            'available_gap_ms': available_gap_ms,
+            'usable_gap_ms': usable_gap_ms,
+            'extended_slot_ms': extended_slot_ms
+        })
+
     with tqdm(total=len(segments), desc="Generating TTS", unit="seg") as pbar:
         for idx, (start_ms, end_ms, text) in enumerate(segments):
             # Skip empty text
@@ -269,8 +299,12 @@ def generate_tts_segments(
                 pbar.update(1)
                 continue
 
-            slot_duration_ms = end_ms - start_ms
+            # Pobierz obliczone gap'y dla tego segmentu
+            gap_info = segment_gaps[idx]
+            slot_duration_ms = gap_info['slot_duration_ms']
+            extended_slot_ms = gap_info['extended_slot_ms']
             slot_duration_sec = slot_duration_ms / 1000.0
+            extended_slot_sec = extended_slot_ms / 1000.0
 
             tts_file = output_path / f"tts_{idx:04d}.mp3"
 
@@ -305,21 +339,28 @@ def generate_tts_segments(
                             pbar.update(1)
                             break
 
-                    # Check if TTS is too long for the slot and needs to be sped up
-                    if tts_duration > slot_duration_sec:
-                        # Target % of slot duration to leave a small gap
-                        target_duration_sec = slot_duration_sec * TTS_SLOT_FILL_RATIO
+                    # Check if TTS is too long for the EXTENDED slot (Gap Extension)
+                    # Używamy extended_slot_sec który zawiera wykorzystany gap
+                    target_duration_sec = extended_slot_sec * TTS_SLOT_FILL_RATIO
+
+                    if tts_duration > target_duration_sec:
+                        # TTS za długi nawet z gap extension - przyspiesz
                         speed_multiplier = tts_duration / target_duration_sec
-                        speed_multiplier = max(1.0, min(speed_multiplier, 1.5))  # Only speed UP (1.0x-1.5x)
+                        speed_multiplier = max(1.0, min(speed_multiplier, 2.0))  # Only speed UP (1.0x-2.0x)
+
+                        # Informacja o gap extension jeśli wykorzystany
+                        gap_info_str = ""
+                        if extended_slot_ms > slot_duration_ms:
+                            gap_info_str = f", +{extended_slot_ms - slot_duration_ms}ms gap"
 
                         if engine == "edge":
                             rate_percent = int((speed_multiplier - 1.0) * 100)
-                            rate_percent = min(rate_percent, 50)  # Cap at +50%
+                            rate_percent = min(rate_percent, 100)  # Cap at +100%
                             rate = f"+{rate_percent}%"
-                            tqdm.write(f"Segment {idx}: TTS za długi ({tts_duration:.2f}s > {slot_duration_sec:.2f}s), przyspieszam do {rate}")
+                            tqdm.write(f"Segment {idx}: TTS za długi ({tts_duration:.2f}s > {extended_slot_sec:.2f}s{gap_info_str}), przyspieszam do {rate}")
                         elif engine == "coqui":
                             speed = speed_multiplier
-                            tqdm.write(f"Segment {idx}: TTS za długi ({tts_duration:.2f}s > {slot_duration_sec:.2f}s), przyspieszam do {speed:.2f}x")
+                            tqdm.write(f"Segment {idx}: TTS za długi ({tts_duration:.2f}s > {extended_slot_sec:.2f}s{gap_info_str}), przyspieszam do {speed:.2f}x")
 
                         # Regenerate with adjusted speed
                         if engine == "edge":
@@ -340,6 +381,16 @@ def generate_tts_segments(
                                 tqdm.write(f"Ostrzeżenie: Nie udało się wygenerować TTS dla segmentu {idx}: {message}")
                                 pbar.update(1)
                                 break
+
+                        # Sprawdź czy TTS nadal nie mieści się po przyspieszeniu
+                        if tts_duration > target_duration_sec:
+                            overflow_ms = int((tts_duration - target_duration_sec) * 1000)
+                            text_preview = text[:50] + "..." if len(text) > 50 else text
+                            tqdm.write(
+                                f"WARNING: Segment {idx}: TTS przekracza slot nawet przy max przyspieszeniu!\n"
+                                f"  Tekst: \"{text_preview}\"\n"
+                                f"  Slot: {slot_duration_ms}ms | Rozszerzony: {extended_slot_ms}ms | TTS: {int(tts_duration * 1000)}ms (+{overflow_ms}ms overflow)"
+                            )
 
                     tts_files.append((start_ms, end_ms, str(tts_file), tts_duration))
                     pbar.update(1)
@@ -412,9 +463,10 @@ def create_tts_audio_track(
             )
             concat_inputs.append(f"[{segment_label}]")
 
-            # Update current time - use end_ms from segment to avoid timing drift
-            slot_duration_ms = end_ms - start_ms
-            current_time_ms = end_ms
+            # Update current time - use actual TTS duration (Gap Extension)
+            # Pozwala na prawidłowe wykorzystanie gap'ów między segmentami
+            actual_duration_ms = int(actual_duration_sec * 1000)
+            current_time_ms = start_ms + actual_duration_ms
 
         # Add final silence to reach total duration
         if current_time_ms < total_duration_ms:
