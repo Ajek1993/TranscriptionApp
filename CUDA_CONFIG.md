@@ -1,4 +1,4 @@
-# Konfiguracja GPU (CUDA) dla faster-whisper
+# Konfiguracja GPU (CUDA) dla Whisper
 
 ## Wymagania
 
@@ -129,9 +129,8 @@ Python: 3.11.9
 torch: 2.5.1+cu121
 torchvision: 0.20.1+cu121
 torchaudio: 2.5.1+cu121
-faster-whisper: 1.2.1
-ctranslate2: 4.6.2
 openai-whisper: 20250625
+whisperx: 3.1.1+
 ```
 
 ## Wydajność (RTX 3070 + CUDA 12.1)
@@ -146,7 +145,6 @@ openai-whisper: 20250625
 
 ## Notatki
 
-- **CTranslate2 4.6.2** wymaga CUDA 12.x (nie działa z CUDA 11.8)
 - **Sterownik NVIDIA** musi być ≥527.41 dla pełnej kompatybilności CUDA 12.1
 - **RTX 3070** ma 8 GB VRAM - wszystkie modele Whisper (tiny-large) mieszczą się w pamięci
 - Środowisko `.venv` **MUSI** być aktywowane przed każdym użyciem

@@ -18,7 +18,8 @@
       "WebSearch",
       "Bash(grep:*)",
       "Bash(docker-compose build:*)",
-      "Bash(cp:*)"
+      "Bash(cp:*)",
+      "Bash(export PATH=\"$PATH:/c/Users/ajek1/.cargo/bin\")"
     ],
     "deny": [],
     "ask": []

@@ -7,7 +7,6 @@
 
 # Core dependencies
 yt-dlp>=2024.12.01
-faster-whisper>=1.1.0
 tqdm>=4.67.0
 deep-translator>=1.11.4
 edge-tts>=7.0.0
@@ -23,9 +22,6 @@ transformers==4.48.0
 # WhisperX - advanced transcription with word-level alignment
 whisperx>=3.1.1,<4.0.0
 
-# REMOVED: ctranslate2==4.6.0
-# Note: faster-whisper now uses CPU exclusively (no CTranslate2 GPU acceleration needed)
-
 # =============================================================================
 # PyTorch is installed separately in Dockerfile:
 # pip install torch==2.3.1 torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cu121
@@ -34,7 +30,6 @@ whisperx>=3.1.1,<4.0.0
 
 # =============================================================================
 # Kompatybilnosc z CUDA 12.4 + cuDNN 9 Runtime:
-# - faster-whisper >= 1.1.0 (uses CPU, no CTranslate2 GPU support needed)
 # - openai-whisper >= 20240930 (PyTorch 2.3.1 cu121, GPU support)
 # - WhisperX >= 3.1.1 (PyTorch 2.3.1 cu121, GPU/CPU hybrid, requires torch~=2.3.1)
 # - transformers 4.48.0 (pinned for WhisperX Pipeline API compatibility)

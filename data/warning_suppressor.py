@@ -21,7 +21,7 @@ def suppress_third_party_warnings(debug_mode: bool = False):
     Ta funkcja konfiguruje:
     - Python warnings filter (DeprecationWarning, FutureWarning, UserWarning)
     - Zmienne środowiskowe dla TensorFlow, HuggingFace, NumPy
-    - Loggery dla bibliotek: yt-dlp, whisper, faster-whisper, whisperx,
+    - Loggery dla bibliotek: yt-dlp, whisper, whisperx,
       torch, tensorflow, transformers, TTS, numpy, scipy, numba, pyannote
 
     Args:
@@ -64,7 +64,6 @@ def suppress_third_party_warnings(debug_mode: bool = False):
 
     # Whisper engines (transkrypcja audio)
     logging.getLogger('whisper').setLevel(logging.ERROR)
-    logging.getLogger('faster_whisper').setLevel(logging.ERROR)
     logging.getLogger('whisperx').setLevel(logging.ERROR)
 
     # PyTorch (deep learning framework)

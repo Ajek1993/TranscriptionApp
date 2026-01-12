@@ -3,7 +3,7 @@
 YouTube to SRT Transcription Tool
 MVP Stage 1: Validate and download audio from YouTube
 MVP Stage 2: Split audio into chunks (~30 minutes each)
-MVP Stage 3: Transcribe audio using faster-whisper
+MVP Stage 3: Transcribe audio using Whisper
 MVP Stage 4: Merge segments and generate SRT file
 MVP Stage 5: Complete pipeline with CLI and automatic cleanup
 MVP Stage 6: TTS dubbing with Edge TTS
@@ -909,7 +909,7 @@ def main():
     transcription_group.add_argument('--language', type=str, default=None,
                        help='Język transkrypcji (domyślnie: auto-detekcja)')
     transcription_group.add_argument('--engine', default='whisper',
-                   choices=['whisper', 'faster-whisper', 'whisperx'],
+                   choices=['whisper', 'whisperx'],
                    help='Silnik transkrypcji (domyślnie: whisper)')
     transcription_group.add_argument('-t', '--translate', type=str, choices=['pl-en', 'en-pl'],
                        help='Tłumaczenie (pl-en: polski->angielski, en-pl: angielski->polski)')

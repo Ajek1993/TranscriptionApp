@@ -530,7 +530,8 @@ def create_tts_audio_track(
     output_path: str
 ) -> Tuple[bool, str]:
     """
-    Combine TTS segments into a single audio track using adjusted timestamps.
+    Combine TTS segments into a single audio track using concat demuxer file.
+    This avoids command line length limits on Windows.
     Uses Dynamic Timestamp Shifting for proper synchronization.
 
     Args:
@@ -550,69 +551,85 @@ def create_tts_audio_track(
         # Sort segments by adjusted start time
         sorted_segments = sorted(segment_timings, key=lambda x: x.adjusted_start_ms)
 
-        # Build filter_complex that creates silence gaps and concatenates
-        filter_parts = []
-        input_args = []
-        concat_inputs = []
+        print(f"Łączenie {len(sorted_segments)} segmentów TTS...")
 
+        # Create list of all audio segments with silence gaps
+        all_segments = []
         current_time_ms = 0
 
         for idx, timing in enumerate(sorted_segments):
-            # Wyciągnij dane z SegmentTiming (używamy adjusted timestamps)
+            # Extract data from SegmentTiming (use adjusted timestamps)
             start_ms = timing.adjusted_start_ms
             file_path = timing.tts_file
             actual_duration_sec = timing.tts_duration_sec
 
-            # Add input file
-            input_args.extend(['-i', str(file_path)])
-
             # If there's a gap before this segment, add silence
             if start_ms > current_time_ms:
                 gap_duration_sec = (start_ms - current_time_ms) / 1000.0
-                silence_label = f"silence{idx}"
-                filter_parts.append(
-                    f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={gap_duration_sec}[{silence_label}]"
-                )
-                concat_inputs.append(f"[{silence_label}]")
+                silence_file = temp_dir / f"sil_{idx}.wav"
 
-            # Add this segment (convert to stereo if needed)
-            segment_label = f"seg{idx}"
-            filter_parts.append(
-                f"[{idx}:a]aformat=sample_rates=44100:channel_layouts=stereo[{segment_label}]"
-            )
-            concat_inputs.append(f"[{segment_label}]")
+                # Generate silence file
+                cmd_silence = [
+                    'ffmpeg', '-y',
+                    '-f', 'lavfi',
+                    '-i', f'anullsrc=channel_layout=stereo:sample_rate=44100',
+                    '-t', str(gap_duration_sec),
+                    '-c:a', 'pcm_s16le',
+                    str(silence_file)
+                ]
+                subprocess.run(cmd_silence, capture_output=True, text=True, timeout=30, check=True)
+                all_segments.append(str(silence_file))
 
-            # Update current time - use actual TTS duration (Gap Extension)
-            # Pozwala na prawidłowe wykorzystanie gap'ów między segmentami
+            # Convert TTS file to WAV format for concat
+            wav_file = temp_dir / f"s_{idx}.wav"
+            cmd_convert = [
+                'ffmpeg', '-y',
+                '-i', str(file_path),
+                '-ar', '44100',
+                '-ac', '2',
+                '-c:a', 'pcm_s16le',
+                str(wav_file)
+            ]
+            subprocess.run(cmd_convert, capture_output=True, text=True, timeout=30, check=True)
+            all_segments.append(str(wav_file))
+
+            # Update current time - use actual TTS duration
             actual_duration_ms = int(actual_duration_sec * 1000)
             current_time_ms = start_ms + actual_duration_ms
 
         # Add final silence to reach total duration
         if current_time_ms < total_duration_ms:
             final_gap_sec = (total_duration_ms - current_time_ms) / 1000.0
-            filter_parts.append(
-                f"anullsrc=channel_layout=stereo:sample_rate=44100:duration={final_gap_sec}[final_silence]"
-            )
-            concat_inputs.append("[final_silence]")
+            final_silence_file = temp_dir / "sil_f.wav"
 
-        # Concatenate all parts
-        concat_input_str = ''.join(concat_inputs)
-        filter_parts.append(
-            f"{concat_input_str}concat=n={len(concat_inputs)}:v=0:a=1[out]"
-        )
+            cmd_final_silence = [
+                'ffmpeg', '-y',
+                '-f', 'lavfi',
+                '-i', f'anullsrc=channel_layout=stereo:sample_rate=44100',
+                '-t', str(final_gap_sec),
+                '-c:a', 'pcm_s16le',
+                str(final_silence_file)
+            ]
+            subprocess.run(cmd_final_silence, capture_output=True, text=True, timeout=30, check=True)
+            all_segments.append(str(final_silence_file))
 
-        filter_complex = ';'.join(filter_parts)
+        # Create concat file list (short path)
+        concat_file = temp_dir / "c.txt"
+        with open(concat_file, 'w', encoding='utf-8') as f:
+            for seg_file in all_segments:
+                # Use forward slashes for ffmpeg compatibility
+                seg_file_unix = seg_file.replace('\\', '/')
+                f.write(f"file '{seg_file_unix}'\n")
 
-        print(f"Łączenie {len(sorted_segments)} segmentów TTS...")
-
+        # Use concat demuxer to combine all files
         cmd = [
             'ffmpeg', '-y',
-            *input_args,
-            '-filter_complex', filter_complex,
-            '-map', '[out]',
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', str(concat_file),
+            '-c:a', 'pcm_s16le',
             '-ar', '44100',
             '-ac', '2',
-            '-c:a', 'pcm_s16le',
             str(output_path)
         ]
 
@@ -628,5 +645,7 @@ def create_tts_audio_track(
 
     except subprocess.TimeoutExpired:
         return False, "Błąd: Łączenie TTS przerwane (timeout)"
+    except subprocess.CalledProcessError as e:
+        return False, f"Błąd przy przetwarzaniu segmentów TTS: {e}"
     except Exception as e:
         return False, f"Błąd przy tworzeniu ścieżki TTS: {str(e)}"

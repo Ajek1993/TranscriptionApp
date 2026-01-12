@@ -4,96 +4,18 @@ Transcription Engines Module
 
 This module provides different transcription engines for audio files:
 - OpenAI Whisper (GPU/CPU support)
-- Faster-Whisper (CPU only, optimized with CTranslate2)
 - WhisperX (GPU/CPU, with alignment and diarization)
 
 All engines return transcription segments in the format:
 List[Tuple[int, int, str]] - (start_ms, end_ms, text)
 """
 
-import threading
-import time
 from pathlib import Path
 from typing import Tuple, List
-from queue import Queue
 from tqdm import tqdm
 
 from .device_manager import detect_device
 from .output_manager import OutputManager
-
-
-def _run_transcription_with_timeout(
-    model, audio_path: str, language: str,
-    timeout_seconds: int, segment_progress_bar, vad_parameters: dict
-) -> Tuple[bool, str, List[Tuple[int, int, str]], object]:
-    """Run model.transcribe() with timeout protection using threading."""
-
-    if timeout_seconds <= 0:
-        # No timeout - run directly
-        segments_generator, info = model.transcribe(
-            audio_path, language=language, word_timestamps=True,
-            vad_filter=True, vad_parameters=vad_parameters
-        )
-        segments = []
-        for segment in segments_generator:
-            segments.append((int(segment.start * 1000), int(segment.end * 1000), segment.text.strip()))
-            if segment_progress_bar:
-                segment_progress_bar.set_postfix_str(f"{len(segments)} segments")
-        return True, "", segments, info
-
-    # Run with timeout
-    result_queue = Queue()
-    exception_queue = Queue()
-
-    def transcribe_thread():
-        try:
-            start_time = time.time()
-            last_log = start_time
-
-            segments_generator, info = model.transcribe(
-                audio_path, language=language, word_timestamps=True,
-                vad_filter=True, vad_parameters=vad_parameters
-            )
-
-            segments = []
-            for segment in segments_generator:
-                segments.append((int(segment.start * 1000), int(segment.end * 1000), segment.text.strip()))
-
-                # Log progress every 30 seconds
-                current_time = time.time()
-                elapsed = current_time - start_time
-                if current_time - last_log >= 30:
-                    tqdm.write(f"  Progress: {len(segments)} segments, {elapsed:.0f}s elapsed")
-                    last_log = current_time
-
-                if segment_progress_bar:
-                    segment_progress_bar.set_postfix_str(f"{len(segments)} seg, {elapsed:.0f}s")
-
-            result_queue.put(("success", segments, info))
-        except Exception as e:
-            exception_queue.put(e)
-
-    thread = threading.Thread(target=transcribe_thread, daemon=True)
-    thread.start()
-    thread.join(timeout=timeout_seconds)
-
-    if thread.is_alive():
-        # Timeout occurred
-        error_msg = f"TIMEOUT: Transcription exceeded {timeout_seconds}s ({timeout_seconds/60:.1f} min)."
-        error_msg += "\nSolutions:"
-        error_msg += "\n  1. Use smaller model: --model base"
-        error_msg += f"\n  2. Increase timeout: --transcription-timeout {timeout_seconds * 2}"
-        error_msg += "\n  3. Disable timeout: --transcription-timeout 0"
-        return False, error_msg, [], None
-
-    if not exception_queue.empty():
-        raise exception_queue.get()
-
-    if not result_queue.empty():
-        status, segments, info = result_queue.get()
-        return True, "", segments, info
-
-    return False, "Unknown error during transcription", [], None
 
 
 def transcribe_with_whisper(
@@ -158,69 +80,6 @@ def transcribe_with_whisper(
             segment_progress_bar.set_postfix_str(f"{len(segments)} segments")
 
     tqdm.write(f"Wykryty język: {result['language']}")
-
-    return True, f"Transkrypcja zakończona: {len(segments)} segmentów", segments
-
-
-def transcribe_with_faster_whisper(
-    wav_path: str,
-    model_size: str,
-    language: str,
-    segment_progress_bar: tqdm,
-    timeout_seconds: int,
-    force_device: str = 'auto'
-) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
-    """
-    Transkrypcja z Faster-Whisper (zawsze CPU).
-
-    Faster-Whisper wymusza użycie CPU ze względu na problemy z CTranslate2.
-    """
-    try:
-        from faster_whisper import WhisperModel
-    except ImportError:
-        return False, "Błąd: faster-whisper nie jest zainstalowany. Zainstaluj: pip install faster-whisper", []
-
-    # Log if user tried to force GPU
-    if force_device == 'cuda':
-        tqdm.write("Warning: Faster-Whisper zawsze używa CPU (CTranslate2 limitation). Ignoruję --device cuda")
-
-    # WYMUSZENIE CPU dla Faster-Whisper
-    device = "cpu"
-    device_info = "CPU (faster-whisper - wymuszony CPU)"
-    tqdm.write(f"Używane urządzenie: {device_info}")
-    tqdm.write("  INFO: Faster-Whisper używa CPU ze względu na kompatybilność CTranslate2")
-
-    # Inicjalizacja modelu (zawsze CPU)
-    tqdm.write(f"Ładowanie modelu {model_size}...")
-    try:
-        model = WhisperModel(model_size, device="cpu", compute_type="int8")
-    except Exception as e:
-        return False, f"Błąd podczas ładowania modelu faster-whisper: {str(e)}", []
-
-    # Transkrypcja
-    OutputManager.stage_header(1, "Transkrypcja")
-    tqdm.write(f"\nTranskrypcja: {Path(wav_path).name}...")
-
-    if timeout_seconds > 0:
-        tqdm.write(f"Timeout: {timeout_seconds}s ({timeout_seconds/60:.1f} min)")
-    else:
-        tqdm.write("Timeout: disabled")
-
-    vad_params = dict(
-        threshold=0.5, min_speech_duration_ms=250, max_speech_duration_s=15,
-        min_silence_duration_ms=500, speech_pad_ms=400
-    )
-
-    # Transcribe with timeout
-    success, error_msg, segments, info = _run_transcription_with_timeout(
-        model, str(wav_path), language, timeout_seconds, segment_progress_bar, vad_params
-    )
-
-    if not success:
-        return False, error_msg, []
-
-    if info:
-        tqdm.write(f"Wykryty język: {info.language} (prawdopodobieństwo: {info.language_probability:.2f})")
 
     return True, f"Transkrypcja zakończona: {len(segments)} segmentów", segments
 
@@ -407,13 +266,6 @@ def transcribe_chunk(
         # Wybór silnika transkrypcji
         if engine == "whisper":
             return transcribe_with_whisper(
-                wav_path, model_size, language,
-                segment_progress_bar, timeout_seconds,
-                force_device=force_device
-            )
-
-        elif engine == "faster-whisper":
-            return transcribe_with_faster_whisper(
                 wav_path, model_size, language,
                 segment_progress_bar, timeout_seconds,
                 force_device=force_device

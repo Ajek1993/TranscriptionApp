@@ -4,7 +4,7 @@ Narzędzie do automatycznej transkrypcji filmów z YouTube lub lokalnych plików
 
 ## Opis
 
-Aplikacja pobiera audio z YouTube lub tworzy je z lokalnych plików wideo, przetwarza je i generuje plik napisów SRT z wykorzystaniem modelu Whisper. Wspiera trzy silniki transkrypcji: OpenAI Whisper (domyślny, GPU), Faster-Whisper (CPU) i WhisperX (zaawansowany z alignmentem i diaryzacją). Wspiera długie materiały audio poprzez automatyczny podział na fragmenty oraz opcjonalne tłumaczenie między polskim a angielskim. Nowa funkcjonalność dubbingu TTS pozwala na wygenerowanie polskiej ścieżki audio z synchronizacją czasową i mixowaniem z oryginalnym dźwiękiem.
+Aplikacja pobiera audio z YouTube lub tworzy je z lokalnych plików wideo, przetwarza je i generuje plik napisów SRT z wykorzystaniem modelu Whisper. Wspiera dwa silniki transkrypcji: OpenAI Whisper (domyślny, GPU) i WhisperX (zaawansowany z alignmentem i diaryzacją). Wspiera długie materiały audio poprzez automatyczny podział na fragmenty oraz opcjonalne tłumaczenie między polskim a angielskim. Nowa funkcjonalność dubbingu TTS pozwala na wygenerowanie polskiej ścieżki audio z synchronizacją czasową i mixowaniem z oryginalnym dźwiękiem.
 
 ## Architektura modularna
 
@@ -20,7 +20,7 @@ Kod aplikacji został zorganizowany w modularną architekturę:
 - **youtube_processor.py** - Pobieranie audio/wideo z YouTube, ekstrakcja audio z plików wideo
 - **audio_processor.py** - Operacje na plikach audio (duration, splitting chunks)
 - **device_manager.py** - Detekcja dostępności GPU/CPU, pamięć GPU
-- **transcription_engines.py** - Implementacja 3 silników transkrypcji (Whisper, Faster-Whisper, WhisperX)
+- **transcription_engines.py** - Implementacja 2 silników transkrypcji (Whisper, WhisperX)
 - **segment_processor.py** - Dzielenie długich segmentów, wypełnianie luk, formatowanie timestampów SRT
 - **translation.py** - Tłumaczenie segmentów napisów (Google Translate via deep-translator)
 - **srt_writer.py** - Generowanie plików SRT ze standardowym formatowaniem
@@ -40,7 +40,7 @@ Wszystkie moduły są zorganizowane jako acykliczny graf zależności (DAG), co 
 - **Dubbing TTS**: Generowanie dubbingu z Microsoft Edge TTS (polskie i angielskie głosy)
 - **Wgrywanie napisów do wideo**: Hardcode subtitles z customizacją stylu (SRT lub ASS)
 - **Napisy dwujęzyczne (ASS)**: Wgrywanie napisów z jednoczesnym wyświetlaniem oryginału i tłumaczenia
-- **Wybór silnika transkrypcji**: OpenAI Whisper (domyślny), Faster-Whisper (CPU), WhisperX (zaawansowany)
+- **Wybór silnika transkrypcji**: OpenAI Whisper (domyślny), WhisperX (zaawansowany)
 - **Docker**: Pełna dockeryzacja z CUDA 12.4 + cuDNN 9 i GPU/CPU fallback
 - **Architektura modularna**: 15 wyspecjalizowanych modułów dla lepszej organizacji kodu
 - Automatyczny podział długich nagrań na fragmenty (~30 minut)
@@ -394,7 +394,7 @@ python transcribe.py "URL" --model medium
 
 ## Silniki transkrypcji
 
-Aplikacja obsługuje trzy silniki transkrypcji:
+Aplikacja obsługuje dwa silniki transkrypcji:
 
 ### 1. OpenAI Whisper (domyślny)
 - **Użycie:** `--engine whisper`
@@ -411,22 +411,7 @@ docker-compose run --rm transcribe "URL" --model base
 python transcribe.py "URL" --model base
 ```
 
-### 2. Faster-Whisper (CPU)
-- **Użycie:** `--engine faster-whisper`
-- **Urządzenie:** Wymuszony CPU
-- **Zalety:** Działa bez GPU
-- **Wady:** Wolniejszy, wymaga więcej czasu
-
-**Użycie:**
-```bash
-# Docker
-docker-compose run --rm transcribe "URL" --engine faster-whisper --model base
-
-# Natywnie
-python transcribe.py "URL" --engine faster-whisper --model base
-```
-
-### 3. WhisperX (zaawansowany)
+### 2. WhisperX (zaawansowany)
 - **Użycie:** `--engine whisperx`
 - **Urządzenie:** Automatycznie GPU/CUDA jeśli dostępne
 - **Zalety:**
@@ -469,7 +454,6 @@ python transcribe.py "URL" --engine whisperx --model base \
 | Silnik | Szybkość | Jakość timestampów | GPU | Diarization |
 |--------|----------|-------------------|-----|-------------|
 | whisper | ⚡⚡⚡⚡ | ⭐⭐⭐ | ✅ Auto | ❌ |
-| faster-whisper | ⚡⚡ | ⭐⭐⭐ | ❌ CPU only | ❌ |
 | whisperx | ⚡⚡⚡ | ⭐⭐⭐⭐⭐ | ✅ Auto | ✅ |
 
 ## Silniki TTS (Text-to-Speech)
@@ -555,14 +539,14 @@ python transcribe.py "URL" --dub --tts-engine coqui --coqui-model tts_models/pl/
 | **Edge TTS** | ⭐⭐⭐⭐ | ⚡⚡⚡⚡ | ❌ | 2 głosy | ❌ | 0 MB (cloud) |
 | **Coqui TTS** | ⭐⭐⭐⭐⭐ | ⚡⚡ | ✅ | 40+ | Opcjonalnie | 100-500 MB |
 
-### 9. Starsze opcje silnika transkrypcji
+### 9. Wybór silnika transkrypcji
 
 ```bash
 # Docker - openai-whisper (domyślny)
 docker-compose run --rm transcribe "URL" --engine whisper
 
-# Docker - faster-whisper (CPU fallback)
-docker-compose run --rm transcribe "URL" --engine faster-whisper
+# Docker - whisperx (zaawansowany)
+docker-compose run --rm transcribe "URL" --engine whisperx
 
 # Natywnie
 python transcribe.py "URL" --engine whisper
@@ -679,12 +663,10 @@ docker-compose run --rm transcribe python -c "import torch; print('GPU:', torch.
 
 ### v4.0
 
-- Trzy silniki transkrypcji: OpenAI Whisper (domyślny), Faster-Whisper (CPU), WhisperX (zaawansowany)
-- Zmiana domyślnego silnika z faster-whisper na whisper (szybszy GPU support)
+- Dwa silniki transkrypcji: OpenAI Whisper (domyślny), WhisperX (zaawansowany)
 - WhisperX z word-level alignment i speaker diarization
 - Refaktoryzacja transcribe_chunk() jako dispatcher do silników
 - Dockerfile zoptymalizowany: zmiana z devel (8-10GB) na runtime (3-4GB)
-- Usunięcie ctranslate2 z zależności (faster-whisper teraz CPU-only)
 - CUDA 12.4 + cuDNN 9 Runtime (zamiast 12.8 devel)
 
 ### v3.2
