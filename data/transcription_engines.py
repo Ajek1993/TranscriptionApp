@@ -244,7 +244,7 @@ def transcribe_chunk(
         wav_path: Ścieżka do pliku WAV
         model_size: Rozmiar modelu (tiny, base, small, medium, large)
         language: Kod języka (pl, en, etc.)
-        engine: Silnik transkrypcji ('whisper', 'faster-whisper', 'whisperx')
+        engine: Silnik transkrypcji ('whisper', 'whisperx')
         segment_progress_bar: Progress bar dla segmentów
         timeout_seconds: Timeout dla transkrypcji (0 = bez limitu)
         whisperx_align: Włącz word-level alignment (tylko WhisperX)

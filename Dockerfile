@@ -41,7 +41,6 @@ RUN pip install --no-cache-dir \
 RUN python -c "import whisperx; print('WhisperX: OK')" && \
     python -c "from transformers import Pipeline; print('Transformers Pipeline: OK')" && \
     python -c "import whisper; print('OpenAI Whisper:', whisper.__version__)" && \
-    python -c "import faster_whisper; print('Faster-Whisper:', faster_whisper.__version__)" && \
     python -c "import torch; print('PyTorch:', torch.__version__, 'CUDA:', torch.version.cuda)"
 
 # Clean up to reduce layer size

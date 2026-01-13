@@ -34,16 +34,17 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 4. Zainstaluj PyTorch z CUDA 12.1
+### 4. Zainstaluj PyTorch z CUDA 12.1 (DOPASOWANE DO DOCKER)
 
-**WAŻNE:** Użyj CUDA 12.1, NIE 11.8!
+**WAŻNE:** Użyj PyTorch 2.3.1 + CUDA 12.1 (takie same jak Docker)!
 
 ```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 --no-cache-dir
+pip install torch==2.3.1 torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cu121 --no-cache-dir
 ```
 
-**Rozmiar:** ~2.4 GB
+**Rozmiar:** ~2.2 GB
 **Czas:** ~5-10 min
+**Note:** Bez torchvision (nie jest używane w projekcie, tak samo jak Docker)
 
 ### 5. (Opcjonalnie) Zainstaluj openai-whisper
 
@@ -61,7 +62,7 @@ python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA:', to
 
 **Oczekiwany output:**
 ```
-PyTorch: 2.5.1+cu121
+PyTorch: 2.3.1+cu121
 CUDA: 12.1
 GPU: True
 ```
@@ -98,7 +99,7 @@ Używane urządzenie: NVIDIA GPU (NVIDIA GeForce RTX 3070)
 **Rozwiązanie:**
 ```bash
 pip uninstall torch torchvision torchaudio -y
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 --no-cache-dir
+pip install torch==2.3.1 torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cu121 --no-cache-dir
 ```
 
 ### Problem: `torch.cuda.is_available()` zwraca False
@@ -122,15 +123,16 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 **Rozwiązanie:** Użyj Python 3.11 zamiast 3.13
 
-## Zainstalowane wersje (działające)
+## Zainstalowane wersje (działające) - Dopasowane do Docker
 
 ```
-Python: 3.11.9
-torch: 2.5.1+cu121
-torchvision: 0.20.1+cu121
-torchaudio: 2.5.1+cu121
-openai-whisper: 20250625
-whisperx: 3.1.1+
+Python: 3.11.x
+torch: 2.3.1+cu121 (identyczne jak Docker)
+torchaudio: 2.3.1+cu121 (identyczne jak Docker)
+torchvision: NIE UŻYWANE (jak w Docker)
+openai-whisper: >=20240930
+whisperx: >=3.1.1,<4.0.0
+transformers: 4.48.0 (pinned, identyczne jak Docker)
 ```
 
 ## Wydajność (RTX 3070 + CUDA 12.1)
