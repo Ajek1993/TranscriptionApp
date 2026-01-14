@@ -22,11 +22,11 @@ from .device_manager import detect_device
 from .audio_processor import get_audio_duration
 
 # Na początku pliku, po importach:
-TTS_SLOT_FILL_RATIO = 0.999  # Wypełnienie 99.9% czasu segmentu
+TTS_SLOT_FILL_RATIO = 0.99# Wypełnienie 95% czasu segmentu (daje 50ms marginesu dla 1000ms slotu)
 
 # Gap Extension Configuration
-MIN_PAUSE_BEFORE_NEXT_MS = 50   # Minimalna cisza przed następnym segmentem (50ms)
-MAX_GAP_EXTENSION_RATIO = 0.99    # Użyj max 99% dostępnego gap'u
+MIN_PAUSE_BEFORE_NEXT_MS = 50   # Minimalna cisza przed następnym segmentem (150ms = naturalna pauza w mowie)
+MAX_GAP_EXTENSION_RATIO = 0.99    # Użyj max 70% dostępnego gap'u (zostaw 30% jako bufor)
 
 # Conditional imports for TTS engines
 try:
@@ -198,8 +198,23 @@ def generate_tts_coqui_for_segment(
 
         tts.tts_to_file(**kwargs)
 
+        # Validate speed parameter
+        if not isinstance(speed, (int, float)) or speed <= 0 or speed > 2.0:
+            print(f"WARNING: Nieprawidłowy speed={speed}, używam 1.0")
+            speed = 1.0
+
+        if speed != speed:  # Check for NaN
+            print("WARNING: Speed is NaN, używam 1.0")
+            speed = 1.0
+
         # Apply speed adjustment and convert to MP3 if needed
-        if speed != 1.0:
+        # Use epsilon tolerance for float comparison to avoid precision issues
+        if abs(speed - 1.0) > 0.001:  # 0.1% tolerance
+            # Measure duration BEFORE speed adjustment (for verification)
+            success_before, duration_before = get_audio_duration(temp_wav)
+            if not success_before:
+                return False, "Błąd: Nie można odczytać długości temp WAV", 0.0
+
             # Use ffmpeg to adjust speed and convert to MP3
             cmd = [
                 'ffmpeg', '-y', '-i', temp_wav,
@@ -207,27 +222,55 @@ def generate_tts_coqui_for_segment(
                 '-b:a', '192k',
                 output_path
             ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+            # Clean up temporary WAV
+            if Path(temp_wav).exists():
+                Path(temp_wav).unlink()
+
+            if result.returncode != 0:
+                return False, f"Błąd konwersji audio: {result.stderr}", 0.0
+
+            # Get duration AFTER speed adjustment
+            success, duration_sec = get_audio_duration(output_path)
+            if not success:
+                return False, "Błąd: Nie można odczytać długości wygenerowanego TTS", 0.0
+
+            # Verify that atempo filter actually worked
+            expected_duration = duration_before / speed
+            duration_ratio = duration_sec / expected_duration
+
+            # If ratio is far from 1.0, atempo may have failed
+            if abs(duration_ratio - 1.0) > 0.1:  # 10% tolerance
+                print(f"WARNING: FFmpeg atempo może nie działać poprawnie!")
+                print(f"  Duration przed: {duration_before:.2f}s")
+                print(f"  Speed: {speed:.2f}x")
+                print(f"  Duration oczekiwany: {expected_duration:.2f}s")
+                print(f"  Duration faktyczny: {duration_sec:.2f}s")
+                print(f"  Ratio: {duration_ratio:.2f} (powinno być ~1.0)")
+                # NOTE: Nie zwracamy błędu - pozwalamy na kontynuację z warning
         else:
-            # Just convert WAV to MP3
+            # Just convert WAV to MP3 (no speed adjustment)
             cmd = [
                 'ffmpeg', '-y', '-i', temp_wav,
                 '-b:a', '192k',
                 output_path
             ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
-        # Clean up temporary WAV
-        if Path(temp_wav).exists():
-            Path(temp_wav).unlink()
+            # Clean up temporary WAV
+            if Path(temp_wav).exists():
+                Path(temp_wav).unlink()
 
-        if result.returncode != 0:
-            return False, f"Błąd konwersji audio: {result.stderr}", 0.0
+            if result.returncode != 0:
+                return False, f"Błąd konwersji audio: {result.stderr}", 0.0
 
-        # Get duration of generated audio
-        success, duration_sec = get_audio_duration(output_path)
-        if not success:
-            return False, "Błąd: Nie można odczytać długości wygenerowanego TTS", 0.0
+            # Get duration of generated audio
+            success, duration_sec = get_audio_duration(output_path)
+            if not success:
+                return False, "Błąd: Nie można odczytać długości wygenerowanego TTS", 0.0
 
         return True, "TTS wygenerowany (Coqui)", duration_sec
 
@@ -339,9 +382,9 @@ def generate_tts_segments(
 
             tts_file = output_path / f"tts_{idx:04d}.mp3"
 
-            # Try generating with normal speed first
-            speed = 1.0  # For Coqui TTS
-            rate = "+0%"  # For Edge TTS
+            # Generate with 1.25x speed by default (proactive overflow prevention)
+            speed = 1.25  # For Coqui TTS - domyślne przyspieszenie
+            rate = "+25%"  # For Edge TTS - domyślne przyspieszenie
             max_retries = 3
 
             for retry in range(max_retries):
@@ -399,10 +442,13 @@ def generate_tts_segments(
                                 generate_tts_for_segment(text, str(tts_file), voice, rate)
                             )
                         elif engine == "coqui":
+                            tqdm.write(f"  DEBUG: Regeneruję TTS z speed={speed:.3f}")
                             success, message, tts_duration = generate_tts_coqui_for_segment(
                                 text, str(tts_file), coqui_model, coqui_speaker, speaker_wav, speed,
                                 coqui_tts_instance, language=target_language
                             )
+                            if success:
+                                tqdm.write(f"  DEBUG: Po regeneracji duration={tts_duration:.3f}s (target={target_duration_sec:.3f}s)")
 
                         if not success:
                             if retry < max_retries - 1:
@@ -443,19 +489,19 @@ def generate_tts_segments(
 
 def adjust_timestamps_for_overflow(
     tts_files: List[Tuple[int, int, str, float]],
-    min_pause_ms: int = MIN_PAUSE_BEFORE_NEXT_MS
+    min_pause_ms: int = 0
 ) -> List[SegmentTiming]:
     """
     Dynamicznie przesuwa timestampy dla segmentów TTS z overflow.
 
-    Algorytm kaskadowy:
-    - Gdy TTS nie mieści się w slocie - przesuwa wszystkie następne segmenty
-    - Przy dużej ciszy - automatyczny powrót do oryginalnych timestampów
-    - Minimalna pauza (MIN_PAUSE) zawsze zachowana
+    Nowa uproszczona logika:
+    - Każdy segment zaczyna się w oryginalnym timestampie LUB zaraz po poprzednim (co później)
+    - Automatyczny powrót do oryginalnych timestampów gdy jest miejsce
+    - Przy overflow: następny segment od razu, bez przerwy (0ms)
 
     Args:
         tts_files: Lista (original_start_ms, original_end_ms, tts_file, tts_duration_sec)
-        min_pause_ms: Minimalna cisza przed następnym segmentem (domyślnie 50ms)
+        min_pause_ms: Nieużywane (zachowane dla kompatybilności API)
 
     Returns:
         Lista SegmentTiming z oryginalnymi + adjusted timestampami
@@ -464,47 +510,25 @@ def adjust_timestamps_for_overflow(
         return []
 
     result = []
-    cumulative_shift_ms = 0
+    previous_end_ms = 0  # Gdzie kończy się poprzedni TTS
 
     for idx, (orig_start_ms, orig_end_ms, tts_file, tts_duration_sec) in enumerate(tts_files):
         tts_duration_ms = int(tts_duration_sec * 1000)
 
-        # Zastosuj cumulative shift z poprzednich segmentów
-        adjusted_start_ms = orig_start_ms + cumulative_shift_ms
+        # Optymalny start: oryginalny timestamp LUB zaraz po poprzednim (co później)
+        adjusted_start_ms = max(orig_start_ms, previous_end_ms)
         adjusted_end_ms = adjusted_start_ms + tts_duration_ms
 
-        # Sprawdź czy można zmniejszyć shift lub czy trzeba zwiększyć
-        if idx < len(tts_files) - 1:
-            next_orig_start_ms = tts_files[idx + 1][0]
+        # Oblicz shift dla raportowania
+        shift_ms = adjusted_start_ms - orig_start_ms
 
-            # KROK 1: Sprawdź shift reduction (powrót do oryginału przy ciszy)
-            if cumulative_shift_ms > 0:
-                # Oblicz dostępny gap z uwzględnieniem obecnego shift
-                available_gap_ms = next_orig_start_ms - adjusted_end_ms
+        # Debug info
+        if shift_ms > 0:
+            print(f"  Segment {idx}: przesunięty o +{shift_ms}ms (poprzedni TTS skończył się w {previous_end_ms}ms)")
+        elif previous_end_ms > 0 and adjusted_start_ms == orig_start_ms:
+            # Powrót do oryginalnego timestampu
+            print(f"  Segment {idx}: powrót do oryginalnego timestampu ({orig_start_ms}ms)")
 
-                if available_gap_ms > min_pause_ms:
-                    # Mamy wystarczającą ciszę - możemy zmniejszyć shift
-                    max_shift_reduction_ms = available_gap_ms - min_pause_ms
-                    shift_reduction_ms = min(cumulative_shift_ms, max_shift_reduction_ms)
-
-                    if shift_reduction_ms > 0:
-                        cumulative_shift_ms -= shift_reduction_ms
-                        print(f"  Segment {idx}: Powrót do oryginalnych timestampów (-{shift_reduction_ms}ms)")
-
-                        # Przelicz adjusted timestamps po redukcji
-                        adjusted_start_ms = orig_start_ms + cumulative_shift_ms
-                        adjusted_end_ms = adjusted_start_ms + tts_duration_ms
-
-            # KROK 2: Sprawdź overflow (czy trzeba zwiększyć shift)
-            next_adjusted_start_ms = next_orig_start_ms + cumulative_shift_ms
-            required_next_start_ms = adjusted_end_ms + min_pause_ms
-
-            if required_next_start_ms > next_adjusted_start_ms:
-                additional_shift_ms = required_next_start_ms - next_adjusted_start_ms
-                cumulative_shift_ms += additional_shift_ms
-                print(f"  Segment {idx}: TTS overflow (+{additional_shift_ms}ms shift dla następnych)")
-
-        segment_shift_ms = adjusted_start_ms - orig_start_ms
         timing = SegmentTiming(
             original_start_ms=orig_start_ms,
             original_end_ms=orig_end_ms,
@@ -512,13 +536,17 @@ def adjust_timestamps_for_overflow(
             adjusted_end_ms=adjusted_end_ms,
             tts_file=tts_file,
             tts_duration_sec=tts_duration_sec,
-            shift_ms=segment_shift_ms
+            shift_ms=shift_ms
         )
         result.append(timing)
 
-    # WARNING dla dużych przesunięć
-    if cumulative_shift_ms > 10000:
-        print(f"WARNING: Duże przesunięcie timestampów (+{cumulative_shift_ms}ms)!")
+        # Aktualizuj gdzie kończy się ten TTS (dla następnego segmentu)
+        previous_end_ms = adjusted_end_ms
+
+    # WARNING dla dużych przesunięć na końcu
+    final_shift = result[-1].shift_ms if result else 0
+    if final_shift > 10000:
+        print(f"WARNING: Duże przesunięcie ostatniego segmentu (+{final_shift}ms)!")
         print("  TTS może znacząco wyprzedzić oryginalne napisy.")
 
     return result

@@ -76,6 +76,7 @@ from data.audio_processor import get_audio_duration, get_audio_duration_ms, spli
 from data.youtube_processor import download_audio, download_video, extract_audio_from_video, get_video_title
 from data.translation import translate_segments
 from data.transcription_engines import transcribe_chunk
+from data.srt_reader import parse_srt_file, validate_srt_file, detect_language_from_segments
 from data.tts_generator import (
     generate_tts_segments,
     create_tts_audio_track,
@@ -901,6 +902,8 @@ def main():
     basic_group.add_argument('--audio-quality', type=str, default='best',
                        choices=['best', '192', '128', '96'],
                        help='Jakość audio przy pobieraniu (domyślnie: best)')
+    basic_group.add_argument('--subtitle-file', type=str, metavar='PATH',
+                       help='Ścieżka do lokalnego pliku SRT (pomija transkrypcję, wymaga wideo i akcji --burn-subtitles lub --dub)')
 
     # ===== OPCJE TRANSKRYPCJI =====
     transcription_group = parser.add_argument_group('Opcje transkrypcji', 'Konfiguracja modelu i języka transkrypcji')
@@ -1072,6 +1075,25 @@ def main():
             print("Błąd: --dual-language wymaga --burn-subtitles")
             return 1
 
+    # Validate --subtitle-file requirements
+    if args.subtitle_file:
+        # Must have video source (URL or --local)
+        if not args.url and not args.local:
+            print("Błąd: --subtitle-file wymaga źródła wideo (YouTube URL lub --local)")
+            return 1
+        # Must have action (burn-subtitles or dub)
+        if not (args.burn_subtitles or args.dub or args.dub_audio_only):
+            print("Błąd: --subtitle-file wymaga --burn-subtitles, --dub lub --dub-audio-only")
+            return 1
+        # Validate SRT file exists
+        is_valid, msg_or_path = validate_srt_file(args.subtitle_file)
+        if not is_valid:
+            print(msg_or_path)
+            return 1
+        # Store validated absolute path
+        args.subtitle_file = msg_or_path
+        print(f"Plik SRT: {args.subtitle_file}")
+
     # Check input source (YouTube URL or local file)
     if not args.url and not args.local:
         print("Błąd: Podaj URL YouTube lub ścieżkę do lokalnego pliku wideo")
@@ -1128,39 +1150,61 @@ def main():
             print(f"Plik audio skopiowany do: {dest_path}")
             return 0
 
-        # Run transcription pipeline (handles audio splitting, transcription, translation)
-        success, error_msg, original_segments, translated_segments = run_transcription_pipeline(audio_path, args, temp_dir)
-        if not success:
-            # Special exit codes for --only-chunk and --only-transcribe modes
-            if error_msg in ["ONLY_CHUNK_MODE", "ONLY_TRANSCRIBE_MODE"]:
-                return 0
-            print(error_msg)
-            return 1
+        # Check if using external subtitle file (skip transcription)
+        if args.subtitle_file:
+            # Load segments from SRT file instead of transcription
+            success, error_msg, loaded_segments = parse_srt_file(args.subtitle_file)
+            if not success:
+                print(error_msg)
+                return 1
 
-        # Determine which segments to use for single-language operations (backward compatibility)
-        final_segments = translated_segments if translated_segments else original_segments
-        subtitle_filename = ""
+            # Auto-detect language if not specified
+            if not args.language:
+                detected_lang = detect_language_from_segments(loaded_segments)
+                args.language = detected_lang
+                print(f"Auto-wykryty język z pliku SRT: {detected_lang}")
 
-        # Generate subtitles: ASS for dual-language, SRT otherwise
-        if args.dual_language:
-            success, error_msg, subtitle_filename = generate_dual_language_ass_output(
-                original_segments,
-                translated_segments,
-                input_stem,
-                args,
-                temp_dir
-            )
+            # Set segments for further processing
+            original_segments = []
+            translated_segments = loaded_segments
+            final_segments = loaded_segments
+            subtitle_filename = args.subtitle_file
+
+            print(f"Załadowano {len(loaded_segments)} segmentów z pliku SRT")
         else:
-            success, error_msg, subtitle_filename = generate_srt_output(
-                final_segments,
-                input_stem,
-                args,
-                temp_dir
-            )
+            # Run transcription pipeline (handles audio splitting, transcription, translation)
+            success, error_msg, original_segments, translated_segments = run_transcription_pipeline(audio_path, args, temp_dir)
+            if not success:
+                # Special exit codes for --only-chunk and --only-transcribe modes
+                if error_msg in ["ONLY_CHUNK_MODE", "ONLY_TRANSCRIBE_MODE"]:
+                    return 0
+                print(error_msg)
+                return 1
 
-        if not success:
-            print(error_msg)
-            return 1
+            # Determine which segments to use for single-language operations (backward compatibility)
+            final_segments = translated_segments if translated_segments else original_segments
+            subtitle_filename = ""
+
+            # Generate subtitles: ASS for dual-language, SRT otherwise
+            if args.dual_language:
+                success, error_msg, subtitle_filename = generate_dual_language_ass_output(
+                    original_segments,
+                    translated_segments,
+                    input_stem,
+                    args,
+                    temp_dir
+                )
+            else:
+                success, error_msg, subtitle_filename = generate_srt_output(
+                    final_segments,
+                    input_stem,
+                    args,
+                    temp_dir
+                )
+
+            if not success:
+                print(error_msg)
+                return 1
 
         # Burn subtitles to video if requested
         if args.burn_subtitles:
