@@ -21,7 +21,7 @@ def mix_audio_tracks(
     original_audio_path: str,
     tts_audio_path: str,
     output_path: str,
-    original_volume: float = 0.2,
+    original_volume: float = 0.5,
     tts_volume: float = 1.0
 ) -> Tuple[bool, str]:
     """

@@ -185,8 +185,11 @@ def generate_tts_coqui_for_segment(
 
         # Generate TTS audio
         kwargs = {"text": text, "file_path": temp_wav}
+        native_speed_applied = False
         if "xtts" in model_name.lower():
             kwargs["language"] = language
+            kwargs["speed"] = 1.5  # Natywny speed dla XTTS
+            native_speed_applied = True
             if speaker_wav:  # Priority 1: WAV file for voice cloning
                 kwargs["speaker_wav"] = speaker_wav
             elif speaker:  # Priority 2: speaker name
@@ -208,6 +211,7 @@ def generate_tts_coqui_for_segment(
             speed = 1.0
 
         # Apply speed adjustment and convert to MP3 if needed
+        # For XTTS: native speed + ffmpeg atempo gives combined speedup (~1.56x for 1.25x each)
         # Use epsilon tolerance for float comparison to avoid precision issues
         if abs(speed - 1.0) > 0.001:  # 0.1% tolerance
             # Measure duration BEFORE speed adjustment (for verification)
