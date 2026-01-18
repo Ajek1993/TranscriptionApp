@@ -21,6 +21,27 @@ try:
 except ImportError:
     TRANSLATOR_AVAILABLE = False
 
+# Supported target languages for translation
+SUPPORTED_TARGET_LANGUAGES = {
+    'pl': 'polski',
+    'en': 'angielski',
+    'de': 'niemiecki',
+    'fr': 'francuski',
+    'es': 'hiszpański',
+    'it': 'włoski',
+    'pt': 'portugalski',
+    'ru': 'rosyjski',
+    'uk': 'ukraiński',
+    'cs': 'czeski',
+    'nl': 'holenderski',
+    'ja': 'japoński',
+    'zh-cn': 'chiński',
+    'ko': 'koreański',
+    'tr': 'turecki',
+    'ar': 'arabski',
+    'hu': 'węgierski',
+}
+
 # Edge TTS support
 try:
     import edge_tts
@@ -160,3 +181,61 @@ def check_coqui_tts_dependency() -> Tuple[bool, str]:
     if not COQUI_TTS_AVAILABLE:
         return False, "Błąd: Coqui TTS nie jest zainstalowany. Zainstaluj: pip install TTS"
     return True, "Coqui TTS dostępny"
+
+
+def validate_translate_format(translate_spec: str) -> Tuple[bool, str, str, str]:
+    """
+    Validate the --translate flag format.
+
+    Supported formats:
+    - "auto-XX" - auto-detect source, translate to XX (e.g., auto-pl, auto-en)
+    - "XX-YY" - translate from XX to YY (e.g., pl-en, en-pl)
+
+    Args:
+        translate_spec: Translation specification string
+
+    Returns:
+        Tuple of (is_valid: bool, error_message: str, source_lang: str, target_lang: str)
+        - If valid: (True, "", source_lang, target_lang)
+        - If invalid: (False, error_message, "", "")
+    """
+    if not translate_spec:
+        return False, "Błąd: Pusty format tłumaczenia", "", ""
+
+    parts = translate_spec.split('-')
+
+    # Handle special case: zh-cn as target (3 parts)
+    if len(parts) == 3 and parts[1] == 'zh' and parts[2] == 'cn':
+        source_lang = parts[0]
+        target_lang = 'zh-cn'
+    elif len(parts) == 2:
+        source_lang, target_lang = parts
+    else:
+        supported_list = ', '.join(SUPPORTED_TARGET_LANGUAGES.keys())
+        return False, (
+            f"Błąd: Nieprawidłowy format flagi --translate: '{translate_spec}'\n"
+            f"Poprawne formaty:\n"
+            f"  --translate auto-pl    # autodetekcja → polski\n"
+            f"  --translate auto-en    # autodetekcja → angielski\n"
+            f"  --translate pl-en      # polski → angielski\n"
+            f"  --translate en-pl      # angielski → polski\n"
+            f"Obsługiwane języki docelowe: {supported_list}"
+        ), "", ""
+
+    # Validate source language (can be 'auto' or a language code)
+    if source_lang != 'auto' and source_lang not in SUPPORTED_TARGET_LANGUAGES:
+        supported_list = ', '.join(SUPPORTED_TARGET_LANGUAGES.keys())
+        return False, (
+            f"Błąd: Nieobsługiwany język źródłowy: '{source_lang}'\n"
+            f"Użyj 'auto' dla automatycznej detekcji lub jeden z: {supported_list}"
+        ), "", ""
+
+    # Validate target language
+    if target_lang not in SUPPORTED_TARGET_LANGUAGES:
+        supported_list = ', '.join(SUPPORTED_TARGET_LANGUAGES.keys())
+        return False, (
+            f"Błąd: Nieobsługiwany język docelowy: '{target_lang}'\n"
+            f"Obsługiwane języki: {supported_list}"
+        ), "", ""
+
+    return True, "", source_lang, target_lang

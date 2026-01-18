@@ -63,7 +63,9 @@ from data.validators import (
     check_dependencies,
     check_edge_tts_dependency,
     check_coqui_tts_dependency,
+    validate_translate_format,
     SUPPORTED_VIDEO_EXTENSIONS,
+    SUPPORTED_TARGET_LANGUAGES,
     TRANSLATOR_AVAILABLE,
     EDGE_TTS_AVAILABLE,
     COQUI_TTS_AVAILABLE
@@ -154,7 +156,7 @@ def run_dubbing_pipeline(
 
     print(f"Język TTS: {tts_language}", end="")
     if args.translate:
-        src, tgt = args.translate.split('-')
+        _, _, src, tgt = validate_translate_format(args.translate)
         print(f" (tłumaczenie: {src} → {tgt})")
     else:
         print()
@@ -486,6 +488,10 @@ def _translate_segments_if_requested(segments: List[Tuple[int, int, str]], args)
     """
     Handle translation step if requested.
 
+    Supports:
+    - auto-XX: Auto-detect source language, translate to XX
+    - XX-YY: Translate from XX to YY
+
     Returns:
         Tuple of (success, error_msg, segments)
     """
@@ -494,14 +500,16 @@ def _translate_segments_if_requested(segments: List[Tuple[int, int, str]], args)
 
     OutputManager.stage_header(2, "Tłumaczenie")
 
-    # Parse translation direction
-    src_lang, tgt_lang = args.translate.split('-')
+    # Parse translation direction using validated format
+    is_valid, error_msg, src_lang, tgt_lang = validate_translate_format(args.translate)
+    if not is_valid:
+        return False, error_msg, []
 
-    # Validate source language matches transcription language
-    if args.language and args.language != src_lang:
+    # Warning for explicit source language mismatch (not for auto mode)
+    if src_lang != 'auto' and args.language and args.language != src_lang:
         print(f"Ostrzeżenie: Język transkrypcji ({args.language}) różni się od źródłowego języka tłumaczenia ({src_lang})")
 
-    success, message, translated_segments = translate_segments(
+    success, message, translated_segments, detected_lang = translate_segments(
         segments,
         source_lang=src_lang,
         target_lang=tgt_lang
@@ -914,8 +922,9 @@ def main():
     transcription_group.add_argument('--engine', default='whisper',
                    choices=['whisper', 'whisperx'],
                    help='Silnik transkrypcji (domyślnie: whisper)')
-    transcription_group.add_argument('-t', '--translate', type=str, choices=['pl-en', 'en-pl'],
-                       help='Tłumaczenie (pl-en: polski->angielski, en-pl: angielski->polski)')
+    transcription_group.add_argument('-t', '--translate', type=str,
+                       help='Tłumaczenie: auto-XX (autodetekcja→XX) lub XX-YY (np. pl-en, en-pl). '
+                            'Przykłady: --translate auto-pl, --translate auto-en, --translate pl-en')
 
     # ===== OPCJE WHISPERX =====
     whisperx_group = parser.add_argument_group('Opcje WhisperX', 'Zaawansowane funkcje dla silnika WhisperX')
@@ -1065,6 +1074,13 @@ def main():
 
     if args.test_merge:
         return handle_test_merge_mode(args)
+
+    # Validate --translate format
+    if args.translate:
+        is_valid, error_msg, src_lang, tgt_lang = validate_translate_format(args.translate)
+        if not is_valid:
+            print(error_msg)
+            return 1
 
     # Validate --dual-language requirements
     if args.dual_language:
