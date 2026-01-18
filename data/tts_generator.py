@@ -22,11 +22,18 @@ from .device_manager import detect_device
 from .audio_processor import get_audio_duration
 
 # Na początku pliku, po importach:
-TTS_SLOT_FILL_RATIO = 0.99# Wypełnienie 95% czasu segmentu (daje 50ms marginesu dla 1000ms slotu)
+TTS_SLOT_FILL_RATIO = 0.99  # Wypełnienie 99% czasu segmentu
 
 # Gap Extension Configuration
 MIN_PAUSE_BEFORE_NEXT_MS = 0   # Minimalna cisza przed następnym segmentem (150ms = naturalna pauza w mowie)
-MAX_GAP_EXTENSION_RATIO = 0.99    # Użyj max 70% dostępnego gap'u (zostaw 30% jako bufor)
+MAX_GAP_EXTENSION_RATIO = 0.99    # Użyj max 99% dostępnego gap'u
+
+# Smart Timestamp Adjustment Configuration
+MIN_NATURAL_PAUSE_MS = 0  # Minimalna pauza do zachowania między segmentami (naturalna mowa)
+MIN_RECOVERY_GAP_MS = 500  # Minimalna cisza wymagana dla recovery (powrotu do oryginałów)
+PREDICTION_THRESHOLD_MS = 200  # Próg overflow dla włączenia predykcji (ms)
+MAX_EARLY_START_MS = 2000  # Maksymalne wcześniejsze rozpoczęcie segmentu (ms)
+RECOVERY_MODE = "aggressive"  # Tryb recovery: "aggressive" | "conservative" | "off"
 
 # Conditional imports for TTS engines
 try:
@@ -59,6 +66,8 @@ class SegmentTiming(NamedTuple):
         tts_file: Ścieżka do pliku TTS
         tts_duration_sec: Rzeczywista długość TTS
         shift_ms: Wartość przesunięcia względem oryginału (dla raportowania)
+        overflow_ms: Ile TTS przekracza slot (może być ujemne dla underflow)
+        used_prediction: Czy wykorzystano predykcję dla tego segmentu
     """
     original_start_ms: int
     original_end_ms: int
@@ -67,6 +76,8 @@ class SegmentTiming(NamedTuple):
     tts_file: str
     tts_duration_sec: float
     shift_ms: int
+    overflow_ms: int = 0
+    used_prediction: bool = False
 
 
 def determine_tts_target_language(
@@ -397,9 +408,9 @@ def generate_tts_segments(
 
             tts_file = output_path / f"tts_{idx:04d}.mp3"
 
-            # Generate with 1.5x speed by default (proactive overflow prevention)
-            speed = 1.5  # For Coqui TTS - domyślne przyspieszenie
-            rate = "+50%"  # For Edge TTS - domyślne przyspieszenie
+            # Generate with 1.25x speed by default (proactive overflow prevention)
+            speed = 1.40  # For Coqui TTS - domyślne przyspieszenie
+            rate = "+40%"  # For Edge TTS - domyślne przyspieszenie
             max_retries = 3
 
             for retry in range(max_retries):
@@ -529,6 +540,10 @@ def adjust_timestamps_for_overflow(
 
     for idx, (orig_start_ms, orig_end_ms, tts_file, tts_duration_sec) in enumerate(tts_files):
         tts_duration_ms = int(tts_duration_sec * 1000)
+        slot_duration_ms = orig_end_ms - orig_start_ms
+
+        # Oblicz overflow
+        overflow_ms = tts_duration_ms - slot_duration_ms
 
         # Optymalny start: oryginalny timestamp LUB zaraz po poprzednim (co później)
         adjusted_start_ms = max(orig_start_ms, previous_end_ms)
@@ -551,7 +566,9 @@ def adjust_timestamps_for_overflow(
             adjusted_end_ms=adjusted_end_ms,
             tts_file=tts_file,
             tts_duration_sec=tts_duration_sec,
-            shift_ms=shift_ms
+            shift_ms=shift_ms,
+            overflow_ms=overflow_ms,
+            used_prediction=False
         )
         result.append(timing)
 
@@ -563,6 +580,193 @@ def adjust_timestamps_for_overflow(
     if final_shift > 10000:
         print(f"WARNING: Duże przesunięcie ostatniego segmentu (+{final_shift}ms)!")
         print("  TTS może znacząco wyprzedzić oryginalne napisy.")
+
+    return result
+
+
+def smart_adjust_timestamps(
+    tts_files: List[Tuple[int, int, str, float]],
+    recovery_mode: str = "aggressive"
+) -> List[SegmentTiming]:
+    """
+    Inteligentne rozmieszczenie segmentów TTS z:
+    - Natychmiastowym czytaniem przy overflow (Scenariusz 1)
+    - Wcześniejszym czytaniem przy nadrabianiu opóźnienia (Scenariusz 2)
+    - Predykcją overflow dla następnych segmentów (Scenariusz 3)
+    - Powrotem do oryginalnych timestampów przy długich ciszach (Scenariusz 4)
+
+    Args:
+        tts_files: Lista (start_ms, end_ms, tts_file, duration_sec)
+        recovery_mode: Tryb odzyskiwania synchronizacji
+            - "aggressive": maksymalne wykorzystanie gap'ów
+            - "conservative": zachowaj naturalne pauzy
+            - "off": tylko podstawowy overflow handling
+
+    Returns:
+        Lista SegmentTiming z inteligentnymi adjusted timestamps
+    """
+    if not tts_files:
+        return []
+
+    # ========== PASS 1: Analiza segmentów ==========
+    segments_info = []
+    for idx, (orig_start_ms, orig_end_ms, tts_file, tts_duration_sec) in enumerate(tts_files):
+        tts_duration_ms = int(tts_duration_sec * 1000)
+        slot_duration_ms = orig_end_ms - orig_start_ms
+        overflow_ms = tts_duration_ms - slot_duration_ms
+
+        # Oblicz dostępny gap do następnego segmentu
+        if idx < len(tts_files) - 1:
+            next_start_ms = tts_files[idx + 1][0]
+            gap_to_next_ms = next_start_ms - orig_end_ms
+        else:
+            gap_to_next_ms = 0
+
+        segments_info.append({
+            'orig_start_ms': orig_start_ms,
+            'orig_end_ms': orig_end_ms,
+            'tts_file': tts_file,
+            'tts_duration_sec': tts_duration_sec,
+            'tts_duration_ms': tts_duration_ms,
+            'slot_duration_ms': slot_duration_ms,
+            'overflow_ms': overflow_ms,
+            'gap_to_next_ms': gap_to_next_ms
+        })
+
+    # ========== PASS 2: Rozmieszczenie segmentów ==========
+    result = []
+    previous_end_ms = 0
+    accumulated_shift_ms = 0
+
+    for idx, info in enumerate(segments_info):
+        orig_start_ms = info['orig_start_ms']
+        orig_end_ms = info['orig_end_ms']
+        tts_file = info['tts_file']
+        tts_duration_sec = info['tts_duration_sec']
+        tts_duration_ms = info['tts_duration_ms']
+        slot_duration_ms = info['slot_duration_ms']
+        overflow_ms = info['overflow_ms']
+        gap_to_next_ms = info['gap_to_next_ms']
+
+        used_prediction = False
+        adjusted_start_ms = orig_start_ms
+        reason = ""
+
+        # SCENARIUSZ 1: Overflow → Natychmiastowe czytanie
+        if overflow_ms > 0:
+            # TTS dłuższy niż slot - zaczynamy zaraz po poprzednim
+            adjusted_start_ms = max(orig_start_ms, previous_end_ms)
+            accumulated_shift_ms = adjusted_start_ms - orig_start_ms
+            reason = "overflow"
+
+        # SCENARIUSZ 2: Nadrabianie opóźnienia
+        elif accumulated_shift_ms > 0 and previous_end_ms < orig_start_ms:
+            # Mamy opóźnienie z poprzednich segmentów, a jest gap - możemy nadrobić
+            available_gap_ms = orig_start_ms - previous_end_ms
+
+            # Ile możemy nadrobić
+            recovery_amount_ms = min(accumulated_shift_ms, available_gap_ms - MIN_NATURAL_PAUSE_MS)
+
+            if recovery_amount_ms > 0:
+                # Nadrabiamy opóźnienie - wracamy bliżej oryginału
+                adjusted_start_ms = orig_start_ms
+                accumulated_shift_ms -= recovery_amount_ms
+                reason = "recovery (nadrabianie)"
+            else:
+                # Nie ma wystarczająco miejsca - zaczynamy po poprzednim
+                adjusted_start_ms = previous_end_ms
+                accumulated_shift_ms = adjusted_start_ms - orig_start_ms
+                reason = "delayed (kontynuacja opóźnienia)"
+
+        # SCENARIUSZ 3: Predykcja overflow
+        elif idx < len(segments_info) - 1:
+            next_info = segments_info[idx + 1]
+            next_overflow_ms = next_info['overflow_ms']
+
+            # Czy następny segment będzie miał overflow?
+            if next_overflow_ms > PREDICTION_THRESHOLD_MS:
+                # Następny ma overflow - sprawdź czy mamy wolne miejsce w tym segmencie
+                free_space_ms = slot_duration_ms - tts_duration_ms
+
+                if free_space_ms > MIN_NATURAL_PAUSE_MS:
+                    # Możemy wykorzystać wolne miejsce - następny segment zacznie się wcześniej
+                    # Ale to zostanie zastosowane w kolejnej iteracji
+                    used_prediction = True
+                    reason = "prediction (przygotowanie)"
+
+                adjusted_start_ms = max(orig_start_ms, previous_end_ms)
+            else:
+                adjusted_start_ms = max(orig_start_ms, previous_end_ms)
+                reason = "normal"
+
+        # SCENARIUSZ 4: Recovery przy dużych gap'ach
+        elif accumulated_shift_ms > 0 and gap_to_next_ms >= MIN_RECOVERY_GAP_MS and recovery_mode != "off":
+            # Duży gap i mamy accumulated shift - możemy wrócić do oryginału
+            if recovery_mode == "aggressive":
+                # Maksymalne wykorzystanie gap'u
+                min_gap_preserve = MIN_NATURAL_PAUSE_MS
+            else:  # conservative
+                # Zachowaj więcej naturalnej pauzy
+                min_gap_preserve = gap_to_next_ms // 2
+
+            # Ile możemy odzyskać
+            recovery_ms = min(accumulated_shift_ms, gap_to_next_ms - min_gap_preserve)
+
+            if recovery_ms > 0:
+                # Powrót do oryginalnego timestampu
+                adjusted_start_ms = orig_start_ms
+                accumulated_shift_ms -= recovery_ms
+                reason = "full recovery (powrót do oryginału)"
+            else:
+                adjusted_start_ms = max(orig_start_ms, previous_end_ms)
+                reason = "normal"
+        else:
+            # Domyślnie: zacznij w oryginalnym czasie lub po poprzednim
+            adjusted_start_ms = max(orig_start_ms, previous_end_ms)
+            accumulated_shift_ms = adjusted_start_ms - orig_start_ms
+            reason = "normal"
+
+        adjusted_end_ms = adjusted_start_ms + tts_duration_ms
+        shift_ms = adjusted_start_ms - orig_start_ms
+
+        # Debug info
+        if shift_ms != 0 or used_prediction:
+            print(f"  Segment {idx}: {reason}, shift={shift_ms:+d}ms, overflow={overflow_ms:+d}ms")
+
+        timing = SegmentTiming(
+            original_start_ms=orig_start_ms,
+            original_end_ms=orig_end_ms,
+            adjusted_start_ms=adjusted_start_ms,
+            adjusted_end_ms=adjusted_end_ms,
+            tts_file=tts_file,
+            tts_duration_sec=tts_duration_sec,
+            shift_ms=shift_ms,
+            overflow_ms=overflow_ms,
+            used_prediction=used_prediction
+        )
+        result.append(timing)
+
+        # Aktualizuj dla następnego segmentu
+        previous_end_ms = adjusted_end_ms
+
+    # Raportowanie końcowe
+    final_shift = result[-1].shift_ms if result else 0
+    if final_shift > 10000:
+        print(f"WARNING: Duże przesunięcie ostatniego segmentu (+{final_shift}ms)!")
+        print("  TTS może znacząco wyprzedzić oryginalne napisy.")
+
+    # Statystyki
+    total_overflow = sum(1 for s in result if s.overflow_ms > 0)
+    total_prediction = sum(1 for s in result if s.used_prediction)
+    total_shifted = sum(1 for s in result if s.shift_ms != 0)
+
+    print(f"\n=== Smart Timestamp Adjustment Stats ===")
+    print(f"  Overflow segments: {total_overflow}/{len(result)}")
+    print(f"  Prediction used: {total_prediction}/{len(result)}")
+    print(f"  Shifted segments: {total_shifted}/{len(result)}")
+    print(f"  Final accumulated shift: {final_shift}ms")
+    print(f"  Recovery mode: {recovery_mode}")
+    print("=========================================\n")
 
     return result
 

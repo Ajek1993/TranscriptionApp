@@ -31,7 +31,7 @@ def mix_audio_tracks(
         original_audio_path: Path to original audio file
         tts_audio_path: Path to TTS audio file
         output_path: Path to save mixed audio
-        original_volume: Volume multiplier for original audio (default: 0.2)
+        original_volume: Volume multiplier for original audio (default: 0.3)
         tts_volume: Volume multiplier for TTS audio (default: 1.0)
 
     Returns:

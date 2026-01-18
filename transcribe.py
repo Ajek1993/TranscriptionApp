@@ -83,6 +83,7 @@ from data.tts_generator import (
     generate_tts_segments,
     create_tts_audio_track,
     adjust_timestamps_for_overflow,
+    smart_adjust_timestamps,
     determine_tts_target_language as tts_determine_language,
     XTTS_SUPPORTED_LANGUAGES as TTS_XTTS_LANGUAGES
 )
@@ -178,9 +179,9 @@ def run_dubbing_pipeline(
 
     print(message)
 
-    # Dynamic Timestamp Shifting - oblicz adjusted timestamps
-    print("Obliczanie dynamicznych przesunięć timestampów...")
-    segment_timings = adjust_timestamps_for_overflow(tts_files)
+    # Smart Timestamp Adjustment - oblicz adjusted timestamps z inteligentnymi algorytmami
+    print("Obliczanie inteligentnych przesunięć timestampów (smart mode)...")
+    segment_timings = smart_adjust_timestamps(tts_files, recovery_mode="aggressive")
 
     # Raportuj przesunięcia
     total_shift_ms = segment_timings[-1].shift_ms if segment_timings else 0
@@ -1012,8 +1013,8 @@ def main():
 
     dubbing_group.add_argument('--tts-volume', type=float, default=1.0,
                        help='Głośność TTS 0.0-2.0 (domyślnie: 1.0)')
-    dubbing_group.add_argument('--original-volume', type=float, default=0.2,
-                       help='Głośność oryginalnego audio 0.0-1.0 (domyślnie: 0.2)')
+    dubbing_group.add_argument('--original-volume', type=float, default=0.3,
+                       help='Głośność oryginalnego audio 0.0-1.0 (domyślnie: 0.3)')
     dubbing_group.add_argument('--dub-output', type=str,
                        help='Nazwa pliku wyjściowego z dubbingiem (domyślnie: video_id_dubbed.mp4)')
     dubbing_group.add_argument('--burn-subtitles', action='store_true',
