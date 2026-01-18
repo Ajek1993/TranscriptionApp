@@ -61,6 +61,7 @@ python -c "import torch; print('PyTorch:', torch.__version__); print('CUDA:', to
 ```
 
 **Oczekiwany output:**
+
 ```
 PyTorch: 2.3.1+cu121
 CUDA: 12.1
@@ -74,6 +75,7 @@ python -c "from transcribe import detect_device; device, info = detect_device();
 ```
 
 **Oczekiwany output:**
+
 ```
 Device: cuda
 Info: NVIDIA GPU (NVIDIA GeForce RTX 3070)
@@ -86,6 +88,7 @@ python transcribe.py "https://www.youtube.com/watch?v=KRÓTKIE_VIDEO" --model ti
 ```
 
 **Sprawdź w outputcie:**
+
 ```
 Używane urządzenie: NVIDIA GPU (NVIDIA GeForce RTX 3070)
 ```
@@ -97,6 +100,7 @@ Używane urządzenie: NVIDIA GPU (NVIDIA GeForce RTX 3070)
 **Przyczyna:** Zainstalowano PyTorch z CUDA 11.8 zamiast 12.1
 
 **Rozwiązanie:**
+
 ```bash
 pip uninstall torch torchvision torchaudio -y
 pip install torch==2.3.1 torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cu121 --no-cache-dir
@@ -105,6 +109,7 @@ pip install torch==2.3.1 torchaudio==2.3.1 --index-url https://download.pytorch.
 ### Problem: `torch.cuda.is_available()` zwraca False
 
 **Rozwiązania:**
+
 1. Sprawdź sterownik NVIDIA: `nvidia-smi` (wymagany ≥527.41)
 2. Zaktualizuj sterownik z [nvidia.com/drivers](https://www.nvidia.com/download/index.aspx)
 3. Upewnij się że używasz środowiska `.venv`:
@@ -116,6 +121,7 @@ pip install torch==2.3.1 torchaudio==2.3.1 --index-url https://download.pytorch.
 ### Problem: Brak miejsca na dysku podczas instalacji
 
 **Rozwiązanie:**
+
 - Wymagane minimum 5 GB wolnego miejsca
 - Wyczyść cache pip: `pip cache purge`
 
@@ -137,13 +143,13 @@ transformers: 4.48.0 (pinned, identyczne jak Docker)
 
 ## Wydajność (RTX 3070 + CUDA 12.1)
 
-| Model | Audio 10 min | CPU      | GPU      | Przyspieszenie |
-|-------|--------------|----------|----------|----------------|
-| tiny  | 10 min       | ~5 min   | ~1.5 min | 3.3x           |
-| base  | 10 min       | ~8 min   | ~2 min   | 4x             |
-| small | 10 min       | ~15 min  | ~4 min   | 3.75x          |
-| medium| 10 min       | ~30 min  | ~8 min   | 3.75x          |
-| large | 10 min       | ~60 min  | ~15 min  | 4x             |
+| Model  | Audio 10 min | CPU     | GPU      | Przyspieszenie |
+| ------ | ------------ | ------- | -------- | -------------- |
+| tiny   | 10 min       | ~5 min  | ~1.5 min | 3.3x           |
+| base   | 10 min       | ~8 min  | ~2 min   | 4x             |
+| small  | 10 min       | ~15 min | ~4 min   | 3.75x          |
+| medium | 10 min       | ~30 min | ~8 min   | 3.75x          |
+| large  | 10 min       | ~60 min | ~15 min  | 4x             |
 
 ## Notatki
 

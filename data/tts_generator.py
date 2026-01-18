@@ -25,7 +25,7 @@ from .audio_processor import get_audio_duration
 TTS_SLOT_FILL_RATIO = 0.99# Wypełnienie 95% czasu segmentu (daje 50ms marginesu dla 1000ms slotu)
 
 # Gap Extension Configuration
-MIN_PAUSE_BEFORE_NEXT_MS = 50   # Minimalna cisza przed następnym segmentem (150ms = naturalna pauza w mowie)
+MIN_PAUSE_BEFORE_NEXT_MS = 0   # Minimalna cisza przed następnym segmentem (150ms = naturalna pauza w mowie)
 MAX_GAP_EXTENSION_RATIO = 0.99    # Użyj max 70% dostępnego gap'u (zostaw 30% jako bufor)
 
 # Conditional imports for TTS engines
@@ -77,13 +77,13 @@ def determine_tts_target_language(
     Determine which language TTS should use.
 
     Logic:
-    1. If --translate specified: use TARGET language (e.g., "pl-en" -> "en")
+    1. If --translate specified: use TARGET language (e.g., "pl-en" -> "en", "auto-pl" -> "pl")
     2. Else if --language specified: use transcription language
     3. Else: default to "pl"
 
     Args:
         transcription_language: Value from --language flag (e.g., "pl", "en")
-        translation_spec: Value from --translate flag (e.g., "pl-en", "en-pl")
+        translation_spec: Value from --translate flag (e.g., "pl-en", "en-pl", "auto-pl", "auto-en")
 
     Returns:
         ISO language code for TTS ("pl", "en", etc.)
@@ -91,6 +91,8 @@ def determine_tts_target_language(
     Examples:
         >>> determine_tts_target_language(None, "pl-en")
         "en"
+        >>> determine_tts_target_language(None, "auto-pl")
+        "pl"
         >>> determine_tts_target_language("pl", None)
         "pl"
         >>> determine_tts_target_language(None, None)
@@ -98,8 +100,17 @@ def determine_tts_target_language(
     """
     if translation_spec:
         # Translation takes priority - use TARGET language
-        src_lang, tgt_lang = translation_spec.split('-')
-        return tgt_lang
+        # Handle both "XX-YY" and "auto-XX" formats, including "auto-zh-cn"
+        parts = translation_spec.split('-')
+        if len(parts) == 3 and parts[1] == 'zh' and parts[2] == 'cn':
+            # Special case: zh-cn target (e.g., "auto-zh-cn" or "en-zh-cn")
+            return 'zh-cn'
+        elif len(parts) == 2:
+            # Standard format: "XX-YY" or "auto-XX"
+            return parts[1]
+        else:
+            # Fallback for unexpected format
+            return parts[-1]
 
     if transcription_language:
         return transcription_language
@@ -386,9 +397,9 @@ def generate_tts_segments(
 
             tts_file = output_path / f"tts_{idx:04d}.mp3"
 
-            # Generate with 1.25x speed by default (proactive overflow prevention)
-            speed = 1.25  # For Coqui TTS - domyślne przyspieszenie
-            rate = "+25%"  # For Edge TTS - domyślne przyspieszenie
+            # Generate with 1.5x speed by default (proactive overflow prevention)
+            speed = 1.5  # For Coqui TTS - domyślne przyspieszenie
+            rate = "+50%"  # For Edge TTS - domyślne przyspieszenie
             max_retries = 3
 
             for retry in range(max_retries):
