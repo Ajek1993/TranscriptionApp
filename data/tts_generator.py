@@ -35,6 +35,11 @@ PREDICTION_THRESHOLD_MS = 200  # Próg overflow dla włączenia predykcji (ms)
 MAX_EARLY_START_MS = 2000  # Maksymalne wcześniejsze rozpoczęcie segmentu (ms)
 RECOVERY_MODE = "aggressive"  # Tryb recovery: "aggressive" | "conservative" | "off"
 
+# XTTS Optimization Configuration
+XTTS_GPT_COND_LEN = 6        # Zmniejszone z 12s (szybsze conditioning)
+XTTS_TEMPERATURE = 0.7       # Niższa dla szybszego generowania
+XTTS_REPETITION_PENALTY = 5.0  # Zmniejszone z 10.0
+
 # Conditional imports for TTS engines
 try:
     import edge_tts
@@ -194,14 +199,12 @@ def generate_tts_coqui_for_segment(
 
         # Initialize TTS if not provided
         if tts_instance is None:
-            tts = TTS(model_name=model_name)
-            # Coqui TTS zawsze próbuje GPU (niezależnie od --device dla transkrypcji)
+            # Detect device first
             tts_device, tts_device_info = detect_device(force_device='auto')
-            try:
-                tts = tts.to(tts_device)
-            except Exception as e:
-                # Silently ignore if .to() fails - TTS will use default device
-                pass
+            use_gpu = (tts_device == "cuda")
+
+            # Initialize TTS with gpu parameter (poprawna metoda dla XTTS)
+            tts = TTS(model_name=model_name, gpu=use_gpu)
         else:
             tts = tts_instance
 
@@ -343,15 +346,22 @@ def generate_tts_segments(
     if engine == "coqui":
         print(f"Ładowanie modelu Coqui TTS: {coqui_model}...")
         try:
-            coqui_tts_instance = TTS(model_name=coqui_model)
-            # Coqui TTS zawsze próbuje GPU (niezależnie od --device dla transkrypcji)
+            # Detect device first
             tts_device, tts_device_info = detect_device(force_device='auto')
-            try:
-                coqui_tts_instance = coqui_tts_instance.to(tts_device)
-                print(f"Model Coqui TTS załadowany pomyślnie na: {tts_device_info}")
-            except Exception as e:
-                print(f"Warning: Nie można przenieść Coqui TTS na {tts_device}: {e}")
-                print("Coqui TTS użyje domyślnego urządzenia")
+            use_gpu = (tts_device == "cuda")
+
+            # Initialize TTS with gpu parameter (poprawna metoda dla XTTS)
+            coqui_tts_instance = TTS(model_name=coqui_model, gpu=use_gpu)
+            print(f"Model Coqui TTS załadowany pomyślnie na: {tts_device_info}")
+
+            # Apply XTTS optimization parameters
+            if use_gpu and "xtts" in coqui_model.lower():
+                if hasattr(coqui_tts_instance, 'synthesizer') and coqui_tts_instance.synthesizer:
+                    if hasattr(coqui_tts_instance.synthesizer, 'tts_config'):
+                        coqui_tts_instance.synthesizer.tts_config.gpt_cond_len = XTTS_GPT_COND_LEN
+                        coqui_tts_instance.synthesizer.tts_config.temperature = XTTS_TEMPERATURE
+                        coqui_tts_instance.synthesizer.tts_config.repetition_penalty = XTTS_REPETITION_PENALTY
+                        print(f"XTTS: Parametry zoptymalizowane (gpt_cond_len={XTTS_GPT_COND_LEN}, temp={XTTS_TEMPERATURE}, rep_penalty={XTTS_REPETITION_PENALTY})")
         except Exception as e:
             return False, f"Błąd ładowania modelu Coqui TTS: {str(e)}", []
 
@@ -408,7 +418,7 @@ def generate_tts_segments(
 
             tts_file = output_path / f"tts_{idx:04d}.mp3"
 
-            # Generate with 1.25x speed by default (proactive overflow prevention)
+            # Generate with 1.40x speed by default (proactive overflow prevention)
             speed = 1.40  # For Coqui TTS - domyślne przyspieszenie
             rate = "+40%"  # For Edge TTS - domyślne przyspieszenie
             max_retries = 3

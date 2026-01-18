@@ -38,6 +38,58 @@ def get_gpu_memory_info() -> str:
     return ""
 
 
+def check_vram_for_model(model_name: str) -> Tuple[bool, str]:
+    """
+    Sprawdza czy dostępna VRAM wystarczy dla danego modelu.
+
+    Args:
+        model_name: Nazwa modelu Whisper (tiny, base, small, medium, large, etc.)
+
+    Returns:
+        Tuple (czy_wystarczy: bool, komunikat_ostrzeżenia: str)
+        - czy_wystarczy: True jeśli VRAM wystarcza lub GPU niedostępne
+        - komunikat_ostrzeżenia: Pusty string jeśli OK, ostrzeżenie jeśli nie
+    """
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return True, ""  # Bez GPU nie sprawdzamy VRAM
+
+        # Pobierz wymagania modelu
+        required_gb = WHISPER_MODEL_MEMORY_REQUIREMENTS.get(model_name, 0)
+        if required_gb == 0:
+            return True, ""  # Nieznany model - nie sprawdzamy
+
+        # Pobierz dostępną pamięć GPU
+        total_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        allocated = torch.cuda.memory_allocated(0) / (1024**3)
+        free_gb = total_mem - allocated
+
+        if free_gb < required_gb:
+            # Sugeruj mniejszy model
+            smaller_models = []
+            for name, req in WHISPER_MODEL_MEMORY_REQUIREMENTS.items():
+                if req < required_gb and req <= free_gb:
+                    smaller_models.append((name, req))
+
+            suggestion = ""
+            if smaller_models:
+                # Wybierz największy model który się zmieści
+                best = max(smaller_models, key=lambda x: x[1])
+                suggestion = f"\n          Rozważ użycie mniejszego modelu (--model {best[0]} wymaga ~{best[1]}GB)."
+
+            warning = (
+                f"Model '{model_name}' wymaga ~{required_gb}GB VRAM, dostępne: {free_gb:.1f}GB.\n"
+                f"          Może wystąpić błąd 'out of memory'.{suggestion}"
+            )
+            return False, warning
+
+        return True, ""
+
+    except Exception:
+        return True, ""  # W razie błędu - kontynuuj bez ostrzeżenia
+
+
 def detect_device(force_device: str = 'auto') -> Tuple[str, str]:
     """
     Detect available device with cuDNN validation.

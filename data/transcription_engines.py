@@ -10,12 +10,81 @@ All engines return transcription segments in the format:
 List[Tuple[int, int, str]] - (start_ms, end_ms, text)
 """
 
+import threading
+import time
 from pathlib import Path
 from typing import Tuple, List
 from tqdm import tqdm
 
-from .device_manager import detect_device
+from .device_manager import detect_device, check_vram_for_model
 from .output_manager import OutputManager
+from .audio_processor import get_audio_duration
+
+
+def _run_with_progress(transcribe_fn, wav_path: str, segment_progress_bar: tqdm,
+                       device: str):
+    """
+    Wrapper który uruchamia transkrypcję z aktualizacją postępu w tle.
+
+    Estymuje postęp na podstawie: elapsed_time / estimated_total_time
+    - GPU (cuda): ~0.3-0.5x realtime
+    - CPU: ~2-5x realtime (zależnie od modelu)
+    """
+    # Pobierz długość audio
+    success, audio_duration = get_audio_duration(wav_path)
+    if not success or audio_duration <= 0:
+        audio_duration = 60.0  # fallback
+
+    # Estymuj współczynnik czasu (ile sekund transkrypcji na sekundę audio)
+    # Te wartości można dostroić na podstawie rzeczywistych pomiarów
+    time_factor = 0.4 if device == "cuda" else 3.0
+    estimated_total_time = audio_duration * time_factor
+
+    result = [None]
+    error = [None]
+    stop_progress = threading.Event()
+
+    def transcription_thread():
+        try:
+            result[0] = transcribe_fn()
+        except Exception as e:
+            error[0] = e
+        finally:
+            stop_progress.set()
+
+    def progress_thread():
+        start_time = time.time()
+        while not stop_progress.is_set():
+            elapsed = time.time() - start_time
+            # Oblicz procent (cap at 99% until done)
+            progress_pct = min((elapsed / estimated_total_time) * 100, 99.0)
+
+            if segment_progress_bar:
+                mins, secs = divmod(int(elapsed), 60)
+                segment_progress_bar.set_postfix_str(
+                    f"{progress_pct:.0f}% | {mins}:{secs:02d} elapsed"
+                )
+
+            stop_progress.wait(0.5)  # Update every 0.5s
+
+    # Uruchom wątki
+    t_transcribe = threading.Thread(target=transcription_thread)
+    t_progress = threading.Thread(target=progress_thread, daemon=True)
+
+    t_transcribe.start()
+    t_progress.start()
+    t_transcribe.join()
+
+    stop_progress.set()
+
+    # Ustaw 100% na końcu
+    if segment_progress_bar:
+        segment_progress_bar.set_postfix_str("100% | done")
+
+    if error[0]:
+        raise error[0]
+
+    return result[0]
 
 
 def transcribe_with_whisper(
@@ -40,6 +109,12 @@ def transcribe_with_whisper(
     device, device_info = detect_device(force_device=force_device)
     tqdm.write(f"Używane urządzenie: {device_info}")
 
+    # Sprawdzenie dostępnej VRAM
+    if device == "cuda":
+        vram_ok, vram_warning = check_vram_for_model(model_size)
+        if not vram_ok:
+            tqdm.write(f"OSTRZEŻENIE: {vram_warning}")
+
     # Ładowanie modelu
     tqdm.write(f"Ładowanie modelu OpenAI Whisper {model_size}...")
     try:
@@ -56,14 +131,22 @@ def transcribe_with_whisper(
     OutputManager.stage_header(1, "Transkrypcja")
     tqdm.write(f"\nTranskrypcja: {Path(wav_path).name}...")
 
-    # OpenAI Whisper nie używa timeout wrapper (prostsza implementacja)
-    try:
-        result = model.transcribe(
+    # Użyj wrappera z progress
+    def do_transcribe():
+        return model.transcribe(
             str(wav_path),
             language=language,
             word_timestamps=True,
             verbose=False,
             fp16=(device == "cuda")
+        )
+
+    try:
+        result = _run_with_progress(
+            do_transcribe,
+            str(wav_path),
+            segment_progress_bar,
+            device
         )
     except Exception as e:
         return False, f"Błąd podczas transkrypcji: {str(e)}", []
@@ -75,9 +158,6 @@ def transcribe_with_whisper(
         end_ms = int(segment["end"] * 1000)
         text = segment["text"].strip()
         segments.append((start_ms, end_ms, text))
-
-        if segment_progress_bar:
-            segment_progress_bar.set_postfix_str(f"{len(segments)} segments")
 
     tqdm.write(f"Wykryty język: {result['language']}")
 
@@ -115,6 +195,12 @@ def transcribe_with_whisperx(
     device, device_info = detect_device(force_device=force_device)
     tqdm.write(f"Używane urządzenie: {device_info}")
 
+    # Sprawdzenie dostępnej VRAM
+    if device == "cuda":
+        vram_ok, vram_warning = check_vram_for_model(model_size)
+        if not vram_ok:
+            tqdm.write(f"OSTRZEŻENIE: {vram_warning}")
+
     # Compute type
     compute_type = "float16" if device == "cuda" else "int8"
 
@@ -140,15 +226,19 @@ def transcribe_with_whisperx(
     OutputManager.stage_header(1, "Transkrypcja")
     tqdm.write(f"\nTranskrypcja WhisperX: {Path(wav_path).name}...")
 
-    # Załaduj audio
-    try:
+    # Użyj wrappera z progress (obejmuje ładowanie audio i transkrypcję)
+    def do_transcribe():
         audio = whisperx.load_audio(str(wav_path))
-    except Exception as e:
-        return False, f"Błąd podczas ładowania audio: {str(e)}", []
+        return model.transcribe(audio, batch_size=16), audio
 
-    # Transkrypcja
     try:
-        result = model.transcribe(audio, batch_size=16)
+        result_and_audio = _run_with_progress(
+            do_transcribe,
+            str(wav_path),
+            segment_progress_bar,
+            device
+        )
+        result, audio = result_and_audio
     except Exception as e:
         return False, f"Błąd podczas transkrypcji WhisperX: {str(e)}", []
 
@@ -215,9 +305,6 @@ def transcribe_with_whisperx(
             text = f"[{segment['speaker']}] {text}"
 
         segments.append((start_ms, end_ms, text))
-
-        if segment_progress_bar:
-            segment_progress_bar.set_postfix_str(f"{len(segments)} segments")
 
     return True, f"Transkrypcja zakończona: {len(segments)} segmentów", segments
 
