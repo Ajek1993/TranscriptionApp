@@ -419,8 +419,8 @@ def generate_tts_segments(
             tts_file = output_path / f"tts_{idx:04d}.mp3"
 
             # Generate with 1.40x speed by default (proactive overflow prevention)
-            speed = 1.40  # For Coqui TTS - domyślne przyspieszenie
-            rate = "+40%"  # For Edge TTS - domyślne przyspieszenie
+            speed = 1.30  # For Coqui TTS - domyślne przyspieszenie
+            rate = "+30%"  # For Edge TTS - domyślne przyspieszenie
             max_retries = 3
 
             for retry in range(max_retries):
