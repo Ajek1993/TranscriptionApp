@@ -125,7 +125,7 @@ def fill_timestamp_gaps(
 
 def merge_segments_for_narrator(
     segments: List[Tuple[int, int, str]],
-    max_gap_to_merge_ms: int = 1000,  # Łącz segmenty z przerwą < 1s
+    max_gap_to_merge_ms: int = 300,  # Zmniejszone z 500 - mniej agresywne łączenie
     max_merged_duration_ms: int = 30000  # Max 30s merged segment
 ) -> List[Tuple[int, int, str]]:
     """

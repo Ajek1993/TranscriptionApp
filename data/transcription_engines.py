@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Tuple, List
 from tqdm import tqdm
 
-from .device_manager import detect_device, check_vram_for_model
+from .device_manager import detect_device, check_vram_for_model, clear_cuda_cache
 from .output_manager import OutputManager
 from .audio_processor import get_audio_duration
 
@@ -160,6 +160,9 @@ def transcribe_with_whisper(
         segments.append((start_ms, end_ms, text))
 
     tqdm.write(f"Wykryty język: {result['language']}")
+
+    # Zwolnij pamięć GPU po transkrypcji
+    clear_cuda_cache()
 
     return True, f"Transkrypcja zakończona: {len(segments)} segmentów", segments
 
@@ -305,6 +308,9 @@ def transcribe_with_whisperx(
             text = f"[{segment['speaker']}] {text}"
 
         segments.append((start_ms, end_ms, text))
+
+    # Zwolnij pamięć GPU po transkrypcji
+    clear_cuda_cache()
 
     return True, f"Transkrypcja zakończona: {len(segments)} segmentów", segments
 

@@ -2,7 +2,7 @@
 """
 YouTube to SRT Transcription Tool
 MVP Stage 1: Validate and download audio from YouTube
-MVP Stage 2: Split audio into chunks (~30 minutes each)
+MVP Stage 2: (disabled) Audio chunking removed - full file processed at once
 MVP Stage 3: Transcribe audio using Whisper
 MVP Stage 4: Merge segments and generate SRT file
 MVP Stage 5: Complete pipeline with CLI and automatic cleanup
@@ -73,8 +73,8 @@ from data.validators import (
 from data.utils import cleanup_temp_files
 from data.segment_processor import split_long_segments, merge_segments_for_narrator, fill_timestamp_gaps, format_srt_timestamp
 from data.srt_writer import write_srt
-from data.device_manager import detect_device, get_gpu_memory_info, WHISPER_MODEL_MEMORY_REQUIREMENTS
-from data.audio_processor import get_audio_duration, get_audio_duration_ms, split_audio
+from data.device_manager import detect_device, get_gpu_memory_info, WHISPER_MODEL_MEMORY_REQUIREMENTS, clear_cuda_cache
+from data.audio_processor import get_audio_duration, get_audio_duration_ms
 from data.youtube_processor import download_audio, download_video, extract_audio_from_video, get_video_title
 from data.translation import translate_segments
 from data.transcription_engines import transcribe_chunk
@@ -452,8 +452,8 @@ def _transcribe_all_chunks(chunk_paths: List[str], args, force_device: str = 'au
 
                 if args.narrator_mode:
                     # Tryb lektora - łączenie segmentów
-                    segments = merge_segments_for_narrator(segments)
-                    tqdm.write(f"Tryb lektora: połączono w {len(segments)} segmentów")
+                    segments = merge_segments_for_narrator(segments, max_gap_to_merge_ms=args.merge_gap)
+                    tqdm.write(f"Tryb lektora: {original_count} → {len(segments)} segmentów (połączono {original_count - len(segments)})")
                 else:
                     # Tryb precyzyjny - dzielenie dla synchronizacji
                     segments = split_long_segments(
@@ -544,12 +544,8 @@ def run_transcription_pipeline(audio_path: str, args, temp_dir: str) -> Tuple[bo
         - For non-dual-language mode: original_segments will be empty []
         - For dual-language mode: both lists will be populated
     """
-    # Stage 2: Split audio into chunks
-    success, message, chunk_paths = split_audio(audio_path, output_dir=temp_dir)
-    if not success:
-        return False, message, [], []
-
-    print(message)
+    # Stage 2: Use full audio file (chunking disabled to prevent GPU memory issues)
+    chunk_paths = [audio_path]  # Process entire file as single "chunk"
 
     if args.only_chunk:
         # For --only-chunk, copy chunks to current directory before cleanup
@@ -1035,6 +1031,8 @@ def main():
     dubbing_group.add_argument('--narrator-mode', action='store_true',
                    help='Tryb lektora - łączy segmenty dla naturalniejszego czytania. '
                         'Mniej precyzyjne timestampy ale brak kumulacji opóźnień.')
+    dubbing_group.add_argument('--merge-gap', type=int, default=300,
+                   help='Maks. przerwa do łączenia segmentów w narrator mode (ms, domyślnie: 300)')
 
     # ===== OPCJE ZAAWANSOWANE =====
     advanced_group = parser.add_argument_group('Opcje zaawansowane', 'Zaawansowana konfiguracja i opcje developerskie')
@@ -1067,6 +1065,9 @@ def main():
 
 
     args = parser.parse_args()
+
+    # Wyczyść ewentualną pozostałość pamięci GPU z poprzedniego uruchomienia
+    clear_cuda_cache()
 
     # Configure debug mode (PHASE 3)
     if args.debug:

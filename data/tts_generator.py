@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Tuple, List, NamedTuple
 from tqdm import tqdm
 
-from .device_manager import detect_device
+from .device_manager import detect_device, clear_cuda_cache
 from .audio_processor import get_audio_duration
 
 # Na początku pliku, po importach:
@@ -31,8 +31,8 @@ MAX_GAP_EXTENSION_RATIO = 0.99    # Użyj max 99% dostępnego gap'u
 # Smart Timestamp Adjustment Configuration
 MIN_NATURAL_PAUSE_MS = 0  # Minimalna pauza do zachowania między segmentami (naturalna mowa)
 MIN_RECOVERY_GAP_MS = 500  # Minimalna cisza wymagana dla recovery (powrotu do oryginałów)
-PREDICTION_THRESHOLD_MS = 200  # Próg overflow dla włączenia predykcji (ms)
-MAX_EARLY_START_MS = 2000  # Maksymalne wcześniejsze rozpoczęcie segmentu (ms)
+PREDICTION_THRESHOLD_MS = 1000  # Próg overflow dla włączenia predykcji (ms) - zwiększone z 200ms
+MAX_EARLY_START_MS = 4000  # Maksymalne wcześniejsze rozpoczęcie segmentu (ms) - zwiększone z 2000ms
 RECOVERY_MODE = "aggressive"  # Tryb recovery: "aggressive" | "conservative" | "off"
 
 # XTTS Optimization Configuration
@@ -435,8 +435,9 @@ def generate_tts_segments(
                 future_overflow_total += predicted_overflow[future_idx]['estimated_overflow_ms']
 
         # Jeśli przyszłe segmenty mają duży overflow, a bieżący ma zapas - przyspiesz
+        # Używamy PREDICTION_THRESHOLD_MS jako minimalny próg dla obu warunków
         current_info = predicted_overflow[idx]
-        if future_overflow_total > 500 and current_info['estimated_overflow_ms'] < -300:
+        if future_overflow_total > PREDICTION_THRESHOLD_MS and current_info['estimated_overflow_ms'] < -PREDICTION_THRESHOLD_MS:
             segments_needing_extra_speed.add(idx)
 
     if segments_needing_extra_speed:
@@ -579,6 +580,9 @@ def generate_tts_segments(
 
     if not tts_files:
         return False, "Błąd: Nie wygenerowano żadnych plików TTS", []
+
+    # Zwolnij pamięć GPU po wygenerowaniu TTS
+    clear_cuda_cache()
 
     return True, f"Wygenerowano {len(tts_files)} plików TTS", tts_files
 
@@ -795,6 +799,11 @@ def smart_adjust_timestamps(
             adjusted_start_ms = max(orig_start_ms, previous_end_ms)
             accumulated_shift_ms = adjusted_start_ms - orig_start_ms
             reason = "normal"
+
+        # Ograniczenie maksymalnego wcześniejszego startu
+        if adjusted_start_ms < orig_start_ms:
+            max_early = orig_start_ms - MAX_EARLY_START_MS
+            adjusted_start_ms = max(adjusted_start_ms, max_early, 0)
 
         adjusted_end_ms = adjusted_start_ms + tts_duration_ms
         shift_ms = adjusted_start_ms - orig_start_ms

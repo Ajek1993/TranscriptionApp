@@ -579,6 +579,17 @@ python transcribe.py "URL" --dub \
 # Przydatne dla szybkiej mowy lub dialogów
 ```
 
+**Tryb lektora (narrator mode):**
+```bash
+# Dla filmów z MAŁĄ ilością tekstu (wywiady, spokojne narracje)
+# Mniejszy merge-gap = więcej segmentów, lepsza synchronizacja
+python transcribe.py "URL" --dub --narrator-mode --merge-gap 50
+
+# Dla filmów z DUŻĄ ilością tekstu (wykłady, szybka mowa)
+# Większy merge-gap = mniej segmentów, płynniejsze czytanie
+python transcribe.py "URL" --dub --narrator-mode --merge-gap 300
+```
+
 ### 12. Własne nazwy plików wyjściowych
 
 ```bash

@@ -138,3 +138,17 @@ def detect_device(force_device: str = 'auto') -> Tuple[str, str]:
             tqdm.write("Falling back to CPU")
 
     return "cpu", "CPU"
+
+
+def clear_cuda_cache():
+    """
+    Zwalnia nieużywaną pamięć CUDA cache.
+    Wywołuj po zakończeniu operacji GPU-intensive.
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    except Exception:
+        pass  # Ignoruj błędy - cache clearing jest opcjonalne
