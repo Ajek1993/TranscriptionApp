@@ -393,6 +393,56 @@ def generate_tts_segments(
             'extended_slot_ms': extended_slot_ms
         })
 
+    # ============ PRE-PASS: Predykcja overflow na podstawie długości tekstu ============
+    # Estymacja: dla polskiego TTS przy +50% rate, około 10-11 znaków/sek
+    # Używamy konserwatywnej wartości, aby nie przegapić overflow
+    CHARS_PER_SECOND_ESTIMATE = 10.0  # ~10 znaków na sekundę przy +50% (konserwatywne)
+    LOOKAHEAD_SEGMENTS = 3  # Ile segmentów do przodu sprawdzać dla overflow
+
+    predicted_overflow = []
+    for idx in range(len(segments)):
+        start_ms, end_ms, text = segments[idx]
+        if text is None:
+            text = ""
+        text = str(text).strip()
+
+        gap_info = segment_gaps[idx]
+        extended_slot_sec = gap_info['extended_slot_ms'] / 1000.0
+
+        # Estymacja długości TTS na podstawie liczby znaków
+        estimated_duration_sec = len(text) / CHARS_PER_SECOND_ESTIMATE
+        estimated_overflow_ms = int((estimated_duration_sec - extended_slot_sec) * 1000)
+
+        predicted_overflow.append({
+            'text_length': len(text),
+            'estimated_duration_sec': estimated_duration_sec,
+            'slot_sec': extended_slot_sec,
+            'estimated_overflow_ms': estimated_overflow_ms,
+            'needs_extra_speed': estimated_overflow_ms > PREDICTION_THRESHOLD_MS
+        })
+
+    # Oznacz segmenty do dodatkowego przyspieszenia
+    # Strategia: przyspieszamy segmenty PRZED tymi z overflow, aby "zwolnić" miejsce
+    # Sprawdzamy do LOOKAHEAD_SEGMENTS segmentów do przodu
+    segments_needing_extra_speed = set()
+
+    for idx in range(len(segments)):
+        # Sprawdź czy którykolwiek z następnych segmentów będzie miał overflow
+        future_overflow_total = 0
+        for look_ahead in range(1, min(LOOKAHEAD_SEGMENTS + 1, len(segments) - idx)):
+            future_idx = idx + look_ahead
+            if predicted_overflow[future_idx]['needs_extra_speed']:
+                future_overflow_total += predicted_overflow[future_idx]['estimated_overflow_ms']
+
+        # Jeśli przyszłe segmenty mają duży overflow, a bieżący ma zapas - przyspiesz
+        current_info = predicted_overflow[idx]
+        if future_overflow_total > 500 and current_info['estimated_overflow_ms'] < -300:
+            segments_needing_extra_speed.add(idx)
+
+    if segments_needing_extra_speed:
+        print(f"Pre-pass: {len(segments_needing_extra_speed)} segmentów oznaczonych do dodatkowego przyspieszenia (prediction)")
+    # ============ KONIEC PRE-PASS ============
+
     with tqdm(total=len(segments), desc="Generating TTS", unit="seg") as pbar:
         for idx, (start_ms, end_ms, text) in enumerate(segments):
             # Skip empty text
@@ -419,8 +469,16 @@ def generate_tts_segments(
             tts_file = output_path / f"tts_{idx:04d}.mp3"
 
             # Generate with 1.40x speed by default (proactive overflow prevention)
-            speed = 1.30  # For Coqui TTS - domyślne przyspieszenie
-            rate = "+30%"  # For Edge TTS - domyślne przyspieszenie
+            # Segmenty z predykcją (poprzedzające overflow) dostają wyższe przyspieszenie
+            if idx in segments_needing_extra_speed:
+                speed = 1.25  # For Coqui TTS - wyższe przyspieszenie dla predykcji
+                base_rate_percent = 25  # For Edge TTS - wyższe przyspieszenie dla predykcji
+                rate = f"+{base_rate_percent}%"
+                tqdm.write(f"Segment {idx}: PREDICTION - używam wyższego przyspieszenia ({rate})")
+            else:
+                speed = 1  # For Coqui TTS - domyślne przyspieszenie
+                base_rate_percent = 0  # For Edge TTS - domyślne przyspieszenie
+                rate = f"+{base_rate_percent}%"
             max_retries = 3
 
             for retry in range(max_retries):
@@ -464,10 +522,12 @@ def generate_tts_segments(
                             gap_info_str = f", +{extended_slot_ms - slot_duration_ms}ms gap"
 
                         if engine == "edge":
-                            rate_percent = int((speed_multiplier - 1.0) * 100)
-                            rate_percent = min(rate_percent, 100)  # Cap at +100%
-                            rate = f"+{rate_percent}%"
-                            tqdm.write(f"Segment {idx}: TTS za długi ({tts_duration:.2f}s > {extended_slot_sec:.2f}s{gap_info_str}), przyspieszam do {rate}")
+                            # Oblicz dodatkowe przyspieszenie potrzebne i dodaj do bazowego
+                            additional_speedup = (tts_duration / target_duration_sec - 1.0) * 100
+                            new_rate_percent = base_rate_percent + int(additional_speedup)
+                            new_rate_percent = min(new_rate_percent, 100)  # Cap at +100%
+                            rate = f"+{new_rate_percent}%"
+                            tqdm.write(f"Segment {idx}: TTS za długi ({tts_duration:.2f}s > {target_duration_sec:.2f}s{gap_info_str}), przyspieszam z +{base_rate_percent}% do +{new_rate_percent}%")
                         elif engine == "coqui":
                             speed = speed_multiplier
                             tqdm.write(f"Segment {idx}: TTS za długi ({tts_duration:.2f}s > {extended_slot_sec:.2f}s{gap_info_str}), przyspieszam do {speed:.2f}x")

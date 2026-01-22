@@ -123,6 +123,45 @@ def fill_timestamp_gaps(
     return result
 
 
+def merge_segments_for_narrator(
+    segments: List[Tuple[int, int, str]],
+    max_gap_to_merge_ms: int = 1000,  # Łącz segmenty z przerwą < 1s
+    max_merged_duration_ms: int = 30000  # Max 30s merged segment
+) -> List[Tuple[int, int, str]]:
+    """
+    Łączy sąsiednie segmenty dla trybu lektora.
+    Zmniejsza liczbę osobnych plików TTS i eliminuje kumulację pauz.
+
+    Args:
+        segments: List of (start_ms, end_ms, text) tuples
+        max_gap_to_merge_ms: Maksymalna przerwa do połączenia (ms)
+        max_merged_duration_ms: Maksymalny czas połączonych segmentów (ms)
+
+    Returns:
+        List of merged segments
+    """
+    if not segments:
+        return []
+
+    result = []
+    current_start, current_end, current_text = segments[0]
+
+    for next_start, next_end, next_text in segments[1:]:
+        gap_ms = next_start - current_end
+        merged_duration = next_end - current_start
+
+        # Łącz jeśli: mała przerwa I nie przekraczamy max czasu
+        if gap_ms <= max_gap_to_merge_ms and merged_duration <= max_merged_duration_ms:
+            current_end = next_end
+            current_text = current_text + " " + next_text
+        else:
+            result.append((current_start, current_end, current_text))
+            current_start, current_end, current_text = next_start, next_end, next_text
+
+    result.append((current_start, current_end, current_text))
+    return result
+
+
 def format_srt_timestamp(ms: int) -> str:
     """
     Convert milliseconds to SRT timestamp format (HH:MM:SS,mmm).

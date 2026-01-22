@@ -71,7 +71,7 @@ from data.validators import (
     COQUI_TTS_AVAILABLE
 )
 from data.utils import cleanup_temp_files
-from data.segment_processor import split_long_segments, fill_timestamp_gaps, format_srt_timestamp
+from data.segment_processor import split_long_segments, merge_segments_for_narrator, fill_timestamp_gaps, format_srt_timestamp
 from data.srt_writer import write_srt
 from data.device_manager import detect_device, get_gpu_memory_info, WHISPER_MODEL_MEMORY_REQUIREMENTS
 from data.audio_processor import get_audio_duration, get_audio_duration_ms, split_audio
@@ -450,14 +450,19 @@ def _transcribe_all_chunks(chunk_paths: List[str], args, force_device: str = 'au
             if args.dub or args.dub_audio_only:
                 original_count = len(segments)
 
-                segments = split_long_segments(
-                    segments,
-                    max_duration_ms=args.max_segment_duration * 1000,
-                    max_words=args.max_segment_words
-                )
-
-                if len(segments) != original_count:
-                    tqdm.write(f"Podzielono długie segmenty: {original_count} → {len(segments)} segmentów")
+                if args.narrator_mode:
+                    # Tryb lektora - łączenie segmentów
+                    segments = merge_segments_for_narrator(segments)
+                    tqdm.write(f"Tryb lektora: połączono w {len(segments)} segmentów")
+                else:
+                    # Tryb precyzyjny - dzielenie dla synchronizacji
+                    segments = split_long_segments(
+                        segments,
+                        max_duration_ms=args.max_segment_duration * 1000,
+                        max_words=args.max_segment_words
+                    )
+                    if len(segments) != original_count:
+                        tqdm.write(f"Podzielono długie segmenty: {original_count} → {len(segments)} segmentów")
 
                 # Fill gaps in timestamps if requested
                 if args.fill_gaps:
@@ -1027,6 +1032,9 @@ def main():
     dubbing_group.add_argument('--dual-language', action='store_true',
                    help='Wypal napisy dwujęzyczne (żółty oryginał + białe tłumaczenie). '
                         'Wymaga: --translate i --burn-subtitles')
+    dubbing_group.add_argument('--narrator-mode', action='store_true',
+                   help='Tryb lektora - łączy segmenty dla naturalniejszego czytania. '
+                        'Mniej precyzyjne timestampy ale brak kumulacji opóźnień.')
 
     # ===== OPCJE ZAAWANSOWANE =====
     advanced_group = parser.add_argument_group('Opcje zaawansowane', 'Zaawansowana konfiguracja i opcje developerskie')
