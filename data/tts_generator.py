@@ -1,0 +1,984 @@
+#!/usr/bin/env python3
+"""
+TTS Generator Module
+
+This module provides Text-to-Speech generation functionality using:
+- Edge TTS (Microsoft Azure voices, fast and free)
+- Coqui TTS (Local TTS, supports XTTS v2 with voice cloning)
+
+All TTS functions handle automatic speed adjustment to fit audio segments
+and return segment information in the format:
+List[Tuple[int, int, str, float]] - (start_ms, end_ms, file_path, duration_sec)
+"""
+
+import asyncio
+import subprocess
+import time
+from pathlib import Path
+from typing import Tuple, List, NamedTuple
+from tqdm import tqdm
+
+from .device_manager import detect_device, clear_cuda_cache
+from .audio_processor import get_audio_duration
+
+# Na początku pliku, po importach:
+TTS_SLOT_FILL_RATIO = 0.99  # Wypełnienie 99% czasu segmentu
+
+# Gap Extension Configuration
+MIN_PAUSE_BEFORE_NEXT_MS = 0   # Minimalna cisza przed następnym segmentem (150ms = naturalna pauza w mowie)
+MAX_GAP_EXTENSION_RATIO = 0.99    # Użyj max 99% dostępnego gap'u
+
+# Smart Timestamp Adjustment Configuration
+MIN_NATURAL_PAUSE_MS = 0  # Minimalna pauza do zachowania między segmentami (naturalna mowa)
+MIN_RECOVERY_GAP_MS = 500  # Minimalna cisza wymagana dla recovery (powrotu do oryginałów)
+PREDICTION_THRESHOLD_MS = 1000  # Próg overflow dla włączenia predykcji (ms) - zwiększone z 200ms
+MAX_EARLY_START_MS = 4000  # Maksymalne wcześniejsze rozpoczęcie segmentu (ms) - zwiększone z 2000ms
+RECOVERY_MODE = "aggressive"  # Tryb recovery: "aggressive" | "conservative" | "off"
+
+# XTTS Optimization Configuration
+XTTS_GPT_COND_LEN = 6        # Zmniejszone z 12s (szybsze conditioning)
+XTTS_TEMPERATURE = 0.7       # Niższa dla szybszego generowania
+XTTS_REPETITION_PENALTY = 5.0  # Zmniejszone z 10.0
+
+# Conditional imports for TTS engines
+try:
+    import edge_tts
+except ImportError:
+    pass
+
+try:
+    from TTS.api import TTS
+except ImportError:
+    pass
+
+
+# XTTS v2 supported languages
+XTTS_SUPPORTED_LANGUAGES = [
+    "en", "es", "fr", "de", "it", "pt", "pl",
+    "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko"
+]
+
+
+class SegmentTiming(NamedTuple):
+    """
+    Rozszerzona struktura timing info dla segmentów TTS.
+
+    Attributes:
+        original_start_ms: Oryginalny timestamp początku (dla napisów SRT/ASS)
+        original_end_ms: Oryginalny timestamp końca (dla napisów SRT/ASS)
+        adjusted_start_ms: Przesunięty timestamp początku (dla audio TTS)
+        adjusted_end_ms: Przesunięty timestamp końca (dla audio TTS)
+        tts_file: Ścieżka do pliku TTS
+        tts_duration_sec: Rzeczywista długość TTS
+        shift_ms: Wartość przesunięcia względem oryginału (dla raportowania)
+        overflow_ms: Ile TTS przekracza slot (może być ujemne dla underflow)
+        used_prediction: Czy wykorzystano predykcję dla tego segmentu
+    """
+    original_start_ms: int
+    original_end_ms: int
+    adjusted_start_ms: int
+    adjusted_end_ms: int
+    tts_file: str
+    tts_duration_sec: float
+    shift_ms: int
+    overflow_ms: int = 0
+    used_prediction: bool = False
+
+
+def determine_tts_target_language(
+    transcription_language: str = None,
+    translation_spec: str = None
+) -> str:
+    """
+    Determine which language TTS should use.
+
+    Logic:
+    1. If --translate specified: use TARGET language (e.g., "pl-en" -> "en", "auto-pl" -> "pl")
+    2. Else if --language specified: use transcription language
+    3. Else: default to "pl"
+
+    Args:
+        transcription_language: Value from --language flag (e.g., "pl", "en")
+        translation_spec: Value from --translate flag (e.g., "pl-en", "en-pl", "auto-pl", "auto-en")
+
+    Returns:
+        ISO language code for TTS ("pl", "en", etc.)
+
+    Examples:
+        >>> determine_tts_target_language(None, "pl-en")
+        "en"
+        >>> determine_tts_target_language(None, "auto-pl")
+        "pl"
+        >>> determine_tts_target_language("pl", None)
+        "pl"
+        >>> determine_tts_target_language(None, None)
+        "pl"
+    """
+    if translation_spec:
+        # Translation takes priority - use TARGET language
+        # Handle both "XX-YY" and "auto-XX" formats, including "auto-zh-cn"
+        parts = translation_spec.split('-')
+        if len(parts) == 3 and parts[1] == 'zh' and parts[2] == 'cn':
+            # Special case: zh-cn target (e.g., "auto-zh-cn" or "en-zh-cn")
+            return 'zh-cn'
+        elif len(parts) == 2:
+            # Standard format: "XX-YY" or "auto-XX"
+            return parts[1]
+        else:
+            # Fallback for unexpected format
+            return parts[-1]
+
+    if transcription_language:
+        return transcription_language
+
+    return "pl"  # Default fallback
+
+
+async def generate_tts_for_segment(
+    text: str,
+    output_path: str,
+    voice: str = "pl-PL-MarekNeural",
+    rate: str = "+0%"
+) -> Tuple[bool, str, float]:
+    """
+    Generate TTS audio for a single text segment with speed control (Edge TTS).
+
+    Args:
+        text: Text to convert to speech
+        output_path: Path to save the MP3 file
+        voice: Voice name (default: pl-PL-MarekNeural)
+        rate: Speech rate adjustment (e.g., "+0%", "+20%", "+50%")
+
+    Returns:
+        Tuple of (success: bool, message: str, duration_seconds: float)
+    """
+    try:
+        communicate = edge_tts.Communicate(text, voice, rate=rate)
+        await communicate.save(output_path)
+
+        # Get duration of generated audio
+        success, duration_sec = get_audio_duration(output_path)
+        if not success:
+            return False, "Błąd: Nie można odczytać długości wygenerowanego TTS", 0.0
+
+        return True, "TTS wygenerowany", duration_sec
+
+    except Exception as e:
+        return False, f"Błąd generowania TTS: {str(e)}", 0.0
+
+
+def generate_tts_coqui_for_segment(
+    text: str,
+    output_path: str,
+    model_name: str = "tts_models/pl/mai_female/vits",
+    speaker: str = None,
+    speaker_wav: str = None,
+    speed: float = 1.0,
+    tts_instance: 'TTS' = None,
+    language: str = "pl"
+) -> Tuple[bool, str, float]:
+    """
+    Generate TTS audio for a single text segment with Coqui TTS.
+
+    Args:
+        text: Text to convert to speech
+        output_path: Path to save the MP3 file
+        model_name: Coqui TTS model name (default: tts_models/pl/mai_female/vits)
+        speaker: Speaker ID for multi-speaker models (optional)
+        speaker_wav: Path to reference audio for voice cloning (XTTS v2)
+        speed: Speech speed multiplier (default: 1.0, range: 0.5-2.0)
+        language: Language code for XTTS models (e.g., "pl", "en")
+        tts_instance: Reusable TTS instance (optional, for performance)
+
+    Returns:
+        Tuple of (success: bool, message: str, duration_seconds: float)
+    """
+    try:
+        # Generate temporary WAV file
+        temp_wav = str(Path(output_path).with_suffix('.wav.tmp'))
+
+        # Initialize TTS if not provided
+        if tts_instance is None:
+            # Detect device first
+            tts_device, tts_device_info = detect_device(force_device='auto')
+            use_gpu = (tts_device == "cuda")
+
+            # Initialize TTS with gpu parameter (poprawna metoda dla XTTS)
+            tts = TTS(model_name=model_name, gpu=use_gpu)
+        else:
+            tts = tts_instance
+
+        # Generate TTS audio
+        kwargs = {"text": text, "file_path": temp_wav}
+        native_speed_applied = False
+        if "xtts" in model_name.lower():
+            kwargs["language"] = language
+            kwargs["speed"] = 1.5  # Natywny speed dla XTTS
+            native_speed_applied = True
+            if speaker_wav:  # Priority 1: WAV file for voice cloning
+                kwargs["speaker_wav"] = speaker_wav
+            elif speaker:  # Priority 2: speaker name
+                kwargs["speaker"] = speaker
+            else:
+                return False, "XTTS v2 wymaga speaker_wav LUB speaker", 0.0
+        elif speaker:
+            kwargs["speaker"] = speaker
+
+        tts.tts_to_file(**kwargs)
+
+        # Validate speed parameter
+        if not isinstance(speed, (int, float)) or speed <= 0 or speed > 2.0:
+            print(f"WARNING: Nieprawidłowy speed={speed}, używam 1.0")
+            speed = 1.0
+
+        if speed != speed:  # Check for NaN
+            print("WARNING: Speed is NaN, używam 1.0")
+            speed = 1.0
+
+        # Apply speed adjustment and convert to MP3 if needed
+        # For XTTS: native speed + ffmpeg atempo gives combined speedup (~1.56x for 1.25x each)
+        # Use epsilon tolerance for float comparison to avoid precision issues
+        if abs(speed - 1.0) > 0.001:  # 0.1% tolerance
+            # Measure duration BEFORE speed adjustment (for verification)
+            success_before, duration_before = get_audio_duration(temp_wav)
+            if not success_before:
+                return False, "Błąd: Nie można odczytać długości temp WAV", 0.0
+
+            # Use ffmpeg to adjust speed and convert to MP3
+            cmd = [
+                'ffmpeg', '-y', '-i', temp_wav,
+                '-filter:a', f'atempo={speed}',
+                '-b:a', '192k',
+                output_path
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+            # Clean up temporary WAV
+            if Path(temp_wav).exists():
+                Path(temp_wav).unlink()
+
+            if result.returncode != 0:
+                return False, f"Błąd konwersji audio: {result.stderr}", 0.0
+
+            # Get duration AFTER speed adjustment
+            success, duration_sec = get_audio_duration(output_path)
+            if not success:
+                return False, "Błąd: Nie można odczytać długości wygenerowanego TTS", 0.0
+
+            # Verify that atempo filter actually worked
+            expected_duration = duration_before / speed
+            duration_ratio = duration_sec / expected_duration
+
+            # If ratio is far from 1.0, atempo may have failed
+            if abs(duration_ratio - 1.0) > 0.1:  # 10% tolerance
+                print(f"WARNING: FFmpeg atempo może nie działać poprawnie!")
+                print(f"  Duration przed: {duration_before:.2f}s")
+                print(f"  Speed: {speed:.2f}x")
+                print(f"  Duration oczekiwany: {expected_duration:.2f}s")
+                print(f"  Duration faktyczny: {duration_sec:.2f}s")
+                print(f"  Ratio: {duration_ratio:.2f} (powinno być ~1.0)")
+                # NOTE: Nie zwracamy błędu - pozwalamy na kontynuację z warning
+        else:
+            # Just convert WAV to MP3 (no speed adjustment)
+            cmd = [
+                'ffmpeg', '-y', '-i', temp_wav,
+                '-b:a', '192k',
+                output_path
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+            # Clean up temporary WAV
+            if Path(temp_wav).exists():
+                Path(temp_wav).unlink()
+
+            if result.returncode != 0:
+                return False, f"Błąd konwersji audio: {result.stderr}", 0.0
+
+            # Get duration of generated audio
+            success, duration_sec = get_audio_duration(output_path)
+            if not success:
+                return False, "Błąd: Nie można odczytać długości wygenerowanego TTS", 0.0
+
+        return True, "TTS wygenerowany (Coqui)", duration_sec
+
+    except Exception as e:
+        # Clean up temporary WAV on error
+        if 'temp_wav' in locals() and Path(temp_wav).exists():
+            Path(temp_wav).unlink()
+        return False, f"Błąd generowania TTS (Coqui): {str(e)}", 0.0
+
+
+def generate_tts_segments(
+    segments: List[Tuple[int, int, str]],
+    output_dir: str,
+    voice: str = "pl-PL-MarekNeural",
+    engine: str = "edge",
+    coqui_model: str = "tts_models/pl/mai_female/vits",
+    coqui_speaker: str = None,
+    speaker_wav: str = None,
+    target_language: str = "pl"
+) -> Tuple[bool, str, List[Tuple[int, int, str, float]]]:
+    """
+    Generate TTS for all segments with automatic speed adjustment.
+
+    Args:
+        segments: List of (start_ms, end_ms, text) tuples
+        output_dir: Directory to save TTS files
+        voice: Voice name (for Edge TTS)
+        engine: TTS engine ('edge' or 'coqui')
+        coqui_model: Coqui TTS model name (for Coqui TTS)
+        coqui_speaker: Speaker ID for multi-speaker Coqui models (optional)
+        speaker_wav: Path to reference audio for voice cloning (XTTS v2)
+        target_language: Target language code for TTS (e.g., "pl", "en")
+
+    Returns:
+        Tuple of (success: bool, message: str, tts_files: List[(start_ms, end_ms, path, duration_sec)])
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    tts_files = []
+
+    # Initialize Coqui TTS instance once if using coqui engine
+    coqui_tts_instance = None
+    if engine == "coqui":
+        print(f"Ładowanie modelu Coqui TTS: {coqui_model}...")
+        try:
+            # Detect device first
+            tts_device, tts_device_info = detect_device(force_device='auto')
+            use_gpu = (tts_device == "cuda")
+
+            # Initialize TTS with gpu parameter (poprawna metoda dla XTTS)
+            coqui_tts_instance = TTS(model_name=coqui_model, gpu=use_gpu)
+            print(f"Model Coqui TTS załadowany pomyślnie na: {tts_device_info}")
+
+            # Apply XTTS optimization parameters
+            if use_gpu and "xtts" in coqui_model.lower():
+                if hasattr(coqui_tts_instance, 'synthesizer') and coqui_tts_instance.synthesizer:
+                    if hasattr(coqui_tts_instance.synthesizer, 'tts_config'):
+                        coqui_tts_instance.synthesizer.tts_config.gpt_cond_len = XTTS_GPT_COND_LEN
+                        coqui_tts_instance.synthesizer.tts_config.temperature = XTTS_TEMPERATURE
+                        coqui_tts_instance.synthesizer.tts_config.repetition_penalty = XTTS_REPETITION_PENALTY
+                        print(f"XTTS: Parametry zoptymalizowane (gpt_cond_len={XTTS_GPT_COND_LEN}, temp={XTTS_TEMPERATURE}, rep_penalty={XTTS_REPETITION_PENALTY})")
+        except Exception as e:
+            return False, f"Błąd ładowania modelu Coqui TTS: {str(e)}", []
+
+    print(f"Generowanie TTS dla {len(segments)} segmentów (engine: {engine})...")
+
+    # Preprocessing: oblicz dostępne gap'y dla każdego segmentu (Gap Extension)
+    segment_gaps = []
+    for idx in range(len(segments)):
+        start_ms, end_ms, text = segments[idx]
+        slot_duration_ms = end_ms - start_ms
+
+        # Oblicz dostępny gap do następnego segmentu
+        if idx < len(segments) - 1:
+            next_start_ms = segments[idx + 1][0]
+            available_gap_ms = max(0, next_start_ms - end_ms)
+        else:
+            available_gap_ms = 0  # Ostatni segment - brak gap'u
+
+        # Oblicz ile gap'u możemy wykorzystać (zachowaj MIN_PAUSE_BEFORE_NEXT_MS)
+        usable_gap_ms = max(0, available_gap_ms - MIN_PAUSE_BEFORE_NEXT_MS)
+
+        # Oblicz rozszerzony slot (wykorzystaj część gap'u)
+        extended_slot_ms = slot_duration_ms + int(usable_gap_ms * MAX_GAP_EXTENSION_RATIO)
+
+        segment_gaps.append({
+            'slot_duration_ms': slot_duration_ms,
+            'available_gap_ms': available_gap_ms,
+            'usable_gap_ms': usable_gap_ms,
+            'extended_slot_ms': extended_slot_ms
+        })
+
+    # ============ PRE-PASS: Predykcja overflow na podstawie długości tekstu ============
+    # Estymacja: dla polskiego TTS przy +50% rate, około 10-11 znaków/sek
+    # Używamy konserwatywnej wartości, aby nie przegapić overflow
+    CHARS_PER_SECOND_ESTIMATE = 10.0  # ~10 znaków na sekundę przy +50% (konserwatywne)
+    LOOKAHEAD_SEGMENTS = 3  # Ile segmentów do przodu sprawdzać dla overflow
+
+    predicted_overflow = []
+    for idx in range(len(segments)):
+        start_ms, end_ms, text = segments[idx]
+        if text is None:
+            text = ""
+        text = str(text).strip()
+
+        gap_info = segment_gaps[idx]
+        extended_slot_sec = gap_info['extended_slot_ms'] / 1000.0
+
+        # Estymacja długości TTS na podstawie liczby znaków
+        estimated_duration_sec = len(text) / CHARS_PER_SECOND_ESTIMATE
+        estimated_overflow_ms = int((estimated_duration_sec - extended_slot_sec) * 1000)
+
+        predicted_overflow.append({
+            'text_length': len(text),
+            'estimated_duration_sec': estimated_duration_sec,
+            'slot_sec': extended_slot_sec,
+            'estimated_overflow_ms': estimated_overflow_ms,
+            'needs_extra_speed': estimated_overflow_ms > PREDICTION_THRESHOLD_MS
+        })
+
+    # Oznacz segmenty do dodatkowego przyspieszenia
+    # Strategia: przyspieszamy segmenty PRZED tymi z overflow, aby "zwolnić" miejsce
+    # Sprawdzamy do LOOKAHEAD_SEGMENTS segmentów do przodu
+    segments_needing_extra_speed = set()
+
+    for idx in range(len(segments)):
+        # Sprawdź czy którykolwiek z następnych segmentów będzie miał overflow
+        future_overflow_total = 0
+        for look_ahead in range(1, min(LOOKAHEAD_SEGMENTS + 1, len(segments) - idx)):
+            future_idx = idx + look_ahead
+            if predicted_overflow[future_idx]['needs_extra_speed']:
+                future_overflow_total += predicted_overflow[future_idx]['estimated_overflow_ms']
+
+        # Jeśli przyszłe segmenty mają duży overflow, a bieżący ma zapas - przyspiesz
+        # Używamy PREDICTION_THRESHOLD_MS jako minimalny próg dla obu warunków
+        current_info = predicted_overflow[idx]
+        if future_overflow_total > PREDICTION_THRESHOLD_MS and current_info['estimated_overflow_ms'] < -PREDICTION_THRESHOLD_MS:
+            segments_needing_extra_speed.add(idx)
+
+    if segments_needing_extra_speed:
+        print(f"Pre-pass: {len(segments_needing_extra_speed)} segmentów oznaczonych do dodatkowego przyspieszenia (prediction)")
+    # ============ KONIEC PRE-PASS ============
+
+    with tqdm(total=len(segments), desc="Generating TTS", unit="seg") as pbar:
+        for idx, (start_ms, end_ms, text) in enumerate(segments):
+            # Skip empty text
+            # Bezpieczne czyszczenie tekstu
+            if text is None:
+                cleaned_text = ""
+            else:
+                cleaned_text = str(text).strip()
+
+            # Skip empty text (po strip)
+            if not cleaned_text:
+                pbar.update(1)
+                continue
+
+            text = cleaned_text
+
+            # Pobierz obliczone gap'y dla tego segmentu
+            gap_info = segment_gaps[idx]
+            slot_duration_ms = gap_info['slot_duration_ms']
+            extended_slot_ms = gap_info['extended_slot_ms']
+            slot_duration_sec = slot_duration_ms / 1000.0
+            extended_slot_sec = extended_slot_ms / 1000.0
+
+            tts_file = output_path / f"tts_{idx:04d}.mp3"
+
+            # Generate with 1.40x speed by default (proactive overflow prevention)
+            # Segmenty z predykcją (poprzedzające overflow) dostają wyższe przyspieszenie
+            if idx in segments_needing_extra_speed:
+                speed = 1.25  # For Coqui TTS - wyższe przyspieszenie dla predykcji
+                base_rate_percent = 25  # For Edge TTS - wyższe przyspieszenie dla predykcji
+                rate = f"+{base_rate_percent}%"
+                tqdm.write(f"Segment {idx}: PREDICTION - używam wyższego przyspieszenia ({rate})")
+            else:
+                speed = 1  # For Coqui TTS - domyślne przyspieszenie
+                base_rate_percent = 0  # For Edge TTS - domyślne przyspieszenie
+                rate = f"+{base_rate_percent}%"
+            max_retries = 3
+
+            for retry in range(max_retries):
+                try:
+                    # Generate TTS based on engine
+                    if engine == "edge":
+                        success, message, tts_duration = asyncio.run(
+                            generate_tts_for_segment(text, str(tts_file), voice, rate)
+                        )
+                    elif engine == "coqui":
+                        success, message, tts_duration = generate_tts_coqui_for_segment(
+                            text, str(tts_file), coqui_model, coqui_speaker, speaker_wav, speed,
+                            coqui_tts_instance, language=target_language
+                        )
+                    else:
+                        tqdm.write(f"Błąd: Nieznany silnik TTS: {engine}")
+                        pbar.update(1)
+                        break
+
+                    if not success:
+                        if retry < max_retries - 1:
+                            time.sleep(0.5 * (retry + 1))  # Exponential backoff
+                            continue
+                        else:
+                            tqdm.write(f"Ostrzeżenie: Nie udało się wygenerować TTS dla segmentu {idx}: {message}")
+                            pbar.update(1)
+                            break
+
+                    # Check if TTS is too long for the EXTENDED slot (Gap Extension)
+                    # Używamy extended_slot_sec który zawiera wykorzystany gap
+                    target_duration_sec = extended_slot_sec * TTS_SLOT_FILL_RATIO
+
+                    if tts_duration > target_duration_sec:
+                        # TTS za długi nawet z gap extension - przyspiesz
+                        speed_multiplier = tts_duration / target_duration_sec
+                        speed_multiplier = max(1.0, min(speed_multiplier, 2.0))  # Only speed UP (1.0x-2.0x)
+
+                        # Informacja o gap extension jeśli wykorzystany
+                        gap_info_str = ""
+                        if extended_slot_ms > slot_duration_ms:
+                            gap_info_str = f", +{extended_slot_ms - slot_duration_ms}ms gap"
+
+                        if engine == "edge":
+                            # Oblicz dodatkowe przyspieszenie potrzebne i dodaj do bazowego
+                            additional_speedup = (tts_duration / target_duration_sec - 1.0) * 100
+                            new_rate_percent = base_rate_percent + int(additional_speedup)
+                            new_rate_percent = min(new_rate_percent, 100)  # Cap at +100%
+                            rate = f"+{new_rate_percent}%"
+                            tqdm.write(f"Segment {idx}: TTS za długi ({tts_duration:.2f}s > {target_duration_sec:.2f}s{gap_info_str}), przyspieszam z +{base_rate_percent}% do +{new_rate_percent}%")
+                        elif engine == "coqui":
+                            speed = speed_multiplier
+                            tqdm.write(f"Segment {idx}: TTS za długi ({tts_duration:.2f}s > {extended_slot_sec:.2f}s{gap_info_str}), przyspieszam do {speed:.2f}x")
+
+                        # Regenerate with adjusted speed
+                        if engine == "edge":
+                            success, message, tts_duration = asyncio.run(
+                                generate_tts_for_segment(text, str(tts_file), voice, rate)
+                            )
+                        elif engine == "coqui":
+                            tqdm.write(f"  DEBUG: Regeneruję TTS z speed={speed:.3f}")
+                            success, message, tts_duration = generate_tts_coqui_for_segment(
+                                text, str(tts_file), coqui_model, coqui_speaker, speaker_wav, speed,
+                                coqui_tts_instance, language=target_language
+                            )
+                            if success:
+                                tqdm.write(f"  DEBUG: Po regeneracji duration={tts_duration:.3f}s (target={target_duration_sec:.3f}s)")
+
+                        if not success:
+                            if retry < max_retries - 1:
+                                time.sleep(0.5 * (retry + 1))
+                                continue
+                            else:
+                                tqdm.write(f"Ostrzeżenie: Nie udało się wygenerować TTS dla segmentu {idx}: {message}")
+                                pbar.update(1)
+                                break
+
+                        # Sprawdź czy TTS nadal nie mieści się po przyspieszeniu
+                        if tts_duration > target_duration_sec:
+                            overflow_ms = int((tts_duration - target_duration_sec) * 1000)
+                            text_preview = text[:50] + "..." if len(text) > 50 else text
+                            tqdm.write(
+                                f"WARNING: Segment {idx}: TTS przekracza slot nawet przy max przyspieszeniu!\n"
+                                f"  Tekst: \"{text_preview}\"\n"
+                                f"  Slot: {slot_duration_ms}ms | Rozszerzony: {extended_slot_ms}ms | TTS: {int(tts_duration * 1000)}ms (+{overflow_ms}ms overflow)"
+                            )
+
+                    tts_files.append((start_ms, end_ms, str(tts_file), tts_duration))
+                    pbar.update(1)
+                    break
+
+                except Exception as e:
+                    if retry < max_retries - 1:
+                        time.sleep(0.5 * (retry + 1))
+                    else:
+                        tqdm.write(f"Ostrzeżenie: Błąd przy generowaniu TTS dla segmentu {idx}: {str(e)}")
+                        pbar.update(1)
+                        break
+
+    if not tts_files:
+        return False, "Błąd: Nie wygenerowano żadnych plików TTS", []
+
+    # Zwolnij pamięć GPU po wygenerowaniu TTS
+    clear_cuda_cache()
+
+    return True, f"Wygenerowano {len(tts_files)} plików TTS", tts_files
+
+
+def adjust_timestamps_for_overflow(
+    tts_files: List[Tuple[int, int, str, float]],
+    min_pause_ms: int = 0
+) -> List[SegmentTiming]:
+    """
+    Dynamicznie przesuwa timestampy dla segmentów TTS z overflow.
+
+    Nowa uproszczona logika:
+    - Każdy segment zaczyna się w oryginalnym timestampie LUB zaraz po poprzednim (co później)
+    - Automatyczny powrót do oryginalnych timestampów gdy jest miejsce
+    - Przy overflow: następny segment od razu, bez przerwy (0ms)
+
+    Args:
+        tts_files: Lista (original_start_ms, original_end_ms, tts_file, tts_duration_sec)
+        min_pause_ms: Nieużywane (zachowane dla kompatybilności API)
+
+    Returns:
+        Lista SegmentTiming z oryginalnymi + adjusted timestampami
+    """
+    if not tts_files:
+        return []
+
+    result = []
+    previous_end_ms = 0  # Gdzie kończy się poprzedni TTS
+
+    for idx, (orig_start_ms, orig_end_ms, tts_file, tts_duration_sec) in enumerate(tts_files):
+        tts_duration_ms = int(tts_duration_sec * 1000)
+        slot_duration_ms = orig_end_ms - orig_start_ms
+
+        # Oblicz overflow
+        overflow_ms = tts_duration_ms - slot_duration_ms
+
+        # Optymalny start: oryginalny timestamp LUB zaraz po poprzednim (co później)
+        adjusted_start_ms = max(orig_start_ms, previous_end_ms)
+        adjusted_end_ms = adjusted_start_ms + tts_duration_ms
+
+        # Oblicz shift dla raportowania
+        shift_ms = adjusted_start_ms - orig_start_ms
+
+        # Debug info
+        if shift_ms > 0:
+            print(f"  Segment {idx}: przesunięty o +{shift_ms}ms (poprzedni TTS skończył się w {previous_end_ms}ms)")
+        elif previous_end_ms > 0 and adjusted_start_ms == orig_start_ms:
+            # Powrót do oryginalnego timestampu
+            print(f"  Segment {idx}: powrót do oryginalnego timestampu ({orig_start_ms}ms)")
+
+        timing = SegmentTiming(
+            original_start_ms=orig_start_ms,
+            original_end_ms=orig_end_ms,
+            adjusted_start_ms=adjusted_start_ms,
+            adjusted_end_ms=adjusted_end_ms,
+            tts_file=tts_file,
+            tts_duration_sec=tts_duration_sec,
+            shift_ms=shift_ms,
+            overflow_ms=overflow_ms,
+            used_prediction=False
+        )
+        result.append(timing)
+
+        # Aktualizuj gdzie kończy się ten TTS (dla następnego segmentu)
+        previous_end_ms = adjusted_end_ms
+
+    # WARNING dla dużych przesunięć na końcu
+    final_shift = result[-1].shift_ms if result else 0
+    if final_shift > 10000:
+        print(f"WARNING: Duże przesunięcie ostatniego segmentu (+{final_shift}ms)!")
+        print("  TTS może znacząco wyprzedzić oryginalne napisy.")
+
+    return result
+
+
+def smart_adjust_timestamps(
+    tts_files: List[Tuple[int, int, str, float]],
+    recovery_mode: str = "aggressive"
+) -> List[SegmentTiming]:
+    """
+    Inteligentne rozmieszczenie segmentów TTS z:
+    - Natychmiastowym czytaniem przy overflow (Scenariusz 1)
+    - Wcześniejszym czytaniem przy nadrabianiu opóźnienia (Scenariusz 2)
+    - Predykcją overflow dla następnych segmentów (Scenariusz 3)
+    - Powrotem do oryginalnych timestampów przy długich ciszach (Scenariusz 4)
+
+    Args:
+        tts_files: Lista (start_ms, end_ms, tts_file, duration_sec)
+        recovery_mode: Tryb odzyskiwania synchronizacji
+            - "aggressive": maksymalne wykorzystanie gap'ów
+            - "conservative": zachowaj naturalne pauzy
+            - "off": tylko podstawowy overflow handling
+
+    Returns:
+        Lista SegmentTiming z inteligentnymi adjusted timestamps
+    """
+    if not tts_files:
+        return []
+
+    # ========== PASS 1: Analiza segmentów ==========
+    segments_info = []
+    for idx, (orig_start_ms, orig_end_ms, tts_file, tts_duration_sec) in enumerate(tts_files):
+        tts_duration_ms = int(tts_duration_sec * 1000)
+        slot_duration_ms = orig_end_ms - orig_start_ms
+        overflow_ms = tts_duration_ms - slot_duration_ms
+
+        # Oblicz dostępny gap do następnego segmentu
+        if idx < len(tts_files) - 1:
+            next_start_ms = tts_files[idx + 1][0]
+            gap_to_next_ms = next_start_ms - orig_end_ms
+        else:
+            gap_to_next_ms = 0
+
+        segments_info.append({
+            'orig_start_ms': orig_start_ms,
+            'orig_end_ms': orig_end_ms,
+            'tts_file': tts_file,
+            'tts_duration_sec': tts_duration_sec,
+            'tts_duration_ms': tts_duration_ms,
+            'slot_duration_ms': slot_duration_ms,
+            'overflow_ms': overflow_ms,
+            'gap_to_next_ms': gap_to_next_ms
+        })
+
+    # ========== PASS 2: Rozmieszczenie segmentów ==========
+    result = []
+    previous_end_ms = 0
+    accumulated_shift_ms = 0
+
+    for idx, info in enumerate(segments_info):
+        orig_start_ms = info['orig_start_ms']
+        orig_end_ms = info['orig_end_ms']
+        tts_file = info['tts_file']
+        tts_duration_sec = info['tts_duration_sec']
+        tts_duration_ms = info['tts_duration_ms']
+        slot_duration_ms = info['slot_duration_ms']
+        overflow_ms = info['overflow_ms']
+        gap_to_next_ms = info['gap_to_next_ms']
+
+        used_prediction = False
+        adjusted_start_ms = orig_start_ms
+        reason = ""
+
+        # SCENARIUSZ 1: Overflow → Natychmiastowe czytanie
+        if overflow_ms > 0:
+            # TTS dłuższy niż slot - zaczynamy zaraz po poprzednim
+            adjusted_start_ms = max(orig_start_ms, previous_end_ms)
+            accumulated_shift_ms = adjusted_start_ms - orig_start_ms
+            reason = "overflow"
+
+        # SCENARIUSZ 2: Nadrabianie opóźnienia
+        elif accumulated_shift_ms > 0 and previous_end_ms < orig_start_ms:
+            # Mamy opóźnienie z poprzednich segmentów, a jest gap - możemy nadrobić
+            available_gap_ms = orig_start_ms - previous_end_ms
+
+            # Ile możemy nadrobić
+            recovery_amount_ms = min(accumulated_shift_ms, available_gap_ms - MIN_NATURAL_PAUSE_MS)
+
+            if recovery_amount_ms > 0:
+                # Nadrabiamy opóźnienie - wracamy bliżej oryginału
+                adjusted_start_ms = orig_start_ms
+                accumulated_shift_ms -= recovery_amount_ms
+                reason = "recovery (nadrabianie)"
+            else:
+                # Nie ma wystarczająco miejsca - zaczynamy po poprzednim
+                adjusted_start_ms = previous_end_ms
+                accumulated_shift_ms = adjusted_start_ms - orig_start_ms
+                reason = "delayed (kontynuacja opóźnienia)"
+
+        # SCENARIUSZ 3: Predykcja overflow
+        elif idx < len(segments_info) - 1:
+            next_info = segments_info[idx + 1]
+            next_overflow_ms = next_info['overflow_ms']
+
+            # Czy następny segment będzie miał overflow?
+            if next_overflow_ms > PREDICTION_THRESHOLD_MS:
+                # Następny ma overflow - sprawdź czy mamy wolne miejsce w tym segmencie
+                free_space_ms = slot_duration_ms - tts_duration_ms
+
+                if free_space_ms > MIN_NATURAL_PAUSE_MS:
+                    # Możemy wykorzystać wolne miejsce - następny segment zacznie się wcześniej
+                    # Ale to zostanie zastosowane w kolejnej iteracji
+                    used_prediction = True
+                    reason = "prediction (przygotowanie)"
+
+                adjusted_start_ms = max(orig_start_ms, previous_end_ms)
+            else:
+                adjusted_start_ms = max(orig_start_ms, previous_end_ms)
+                reason = "normal"
+
+        # SCENARIUSZ 4: Recovery przy dużych gap'ach
+        elif accumulated_shift_ms > 0 and gap_to_next_ms >= MIN_RECOVERY_GAP_MS and recovery_mode != "off":
+            # Duży gap i mamy accumulated shift - możemy wrócić do oryginału
+            if recovery_mode == "aggressive":
+                # Maksymalne wykorzystanie gap'u
+                min_gap_preserve = MIN_NATURAL_PAUSE_MS
+            else:  # conservative
+                # Zachowaj więcej naturalnej pauzy
+                min_gap_preserve = gap_to_next_ms // 2
+
+            # Ile możemy odzyskać
+            recovery_ms = min(accumulated_shift_ms, gap_to_next_ms - min_gap_preserve)
+
+            if recovery_ms > 0:
+                # Powrót do oryginalnego timestampu
+                adjusted_start_ms = orig_start_ms
+                accumulated_shift_ms -= recovery_ms
+                reason = "full recovery (powrót do oryginału)"
+            else:
+                adjusted_start_ms = max(orig_start_ms, previous_end_ms)
+                reason = "normal"
+        else:
+            # Domyślnie: zacznij w oryginalnym czasie lub po poprzednim
+            adjusted_start_ms = max(orig_start_ms, previous_end_ms)
+            accumulated_shift_ms = adjusted_start_ms - orig_start_ms
+            reason = "normal"
+
+        # Ograniczenie maksymalnego wcześniejszego startu
+        if adjusted_start_ms < orig_start_ms:
+            max_early = orig_start_ms - MAX_EARLY_START_MS
+            adjusted_start_ms = max(adjusted_start_ms, max_early, 0)
+
+        adjusted_end_ms = adjusted_start_ms + tts_duration_ms
+        shift_ms = adjusted_start_ms - orig_start_ms
+
+        # Debug info
+        if shift_ms != 0 or used_prediction:
+            print(f"  Segment {idx}: {reason}, shift={shift_ms:+d}ms, overflow={overflow_ms:+d}ms")
+
+        timing = SegmentTiming(
+            original_start_ms=orig_start_ms,
+            original_end_ms=orig_end_ms,
+            adjusted_start_ms=adjusted_start_ms,
+            adjusted_end_ms=adjusted_end_ms,
+            tts_file=tts_file,
+            tts_duration_sec=tts_duration_sec,
+            shift_ms=shift_ms,
+            overflow_ms=overflow_ms,
+            used_prediction=used_prediction
+        )
+        result.append(timing)
+
+        # Aktualizuj dla następnego segmentu
+        previous_end_ms = adjusted_end_ms
+
+    # Raportowanie końcowe
+    final_shift = result[-1].shift_ms if result else 0
+    if final_shift > 10000:
+        print(f"WARNING: Duże przesunięcie ostatniego segmentu (+{final_shift}ms)!")
+        print("  TTS może znacząco wyprzedzić oryginalne napisy.")
+
+    # Statystyki
+    total_overflow = sum(1 for s in result if s.overflow_ms > 0)
+    total_prediction = sum(1 for s in result if s.used_prediction)
+    total_shifted = sum(1 for s in result if s.shift_ms != 0)
+
+    print(f"\n=== Smart Timestamp Adjustment Stats ===")
+    print(f"  Overflow segments: {total_overflow}/{len(result)}")
+    print(f"  Prediction used: {total_prediction}/{len(result)}")
+    print(f"  Shifted segments: {total_shifted}/{len(result)}")
+    print(f"  Final accumulated shift: {final_shift}ms")
+    print(f"  Recovery mode: {recovery_mode}")
+    print("=========================================\n")
+
+    return result
+
+
+def create_tts_audio_track(
+    segment_timings: List[SegmentTiming],
+    total_duration_ms: int,
+    output_path: str
+) -> Tuple[bool, str, List[Path]]:
+    """
+    Combine TTS segments into a single audio track using concat demuxer file.
+    This avoids command line length limits on Windows.
+    Uses Dynamic Timestamp Shifting for proper synchronization.
+
+    Args:
+        segment_timings: List of SegmentTiming with adjusted timestamps
+        total_duration_ms: Total duration of the final track (including shifts)
+        output_path: Path to save the combined audio
+
+    Returns:
+        Tuple of (success: bool, message: str, temp_files: List[Path])
+    """
+    try:
+        if not segment_timings:
+            return False, "Błąd: Brak plików TTS do połączenia", []
+
+        temp_dir = Path(output_path).parent
+
+        # Sort segments by adjusted start time
+        sorted_segments = sorted(segment_timings, key=lambda x: x.adjusted_start_ms)
+
+        print(f"Łączenie {len(sorted_segments)} segmentów TTS...")
+
+        # Create list of all audio segments with silence gaps
+        all_segments = []
+        current_time_ms = 0
+
+        # Track all created temp files for cleanup
+        temp_files_created: List[Path] = []
+
+        for idx, timing in enumerate(sorted_segments):
+            # Extract data from SegmentTiming (use adjusted timestamps)
+            start_ms = timing.adjusted_start_ms
+            file_path = timing.tts_file
+            actual_duration_sec = timing.tts_duration_sec
+
+            # If there's a gap before this segment, add silence
+            if start_ms > current_time_ms:
+                gap_duration_sec = (start_ms - current_time_ms) / 1000.0
+                silence_file = temp_dir / f"sil_{idx}.wav"
+
+                # Generate silence file
+                cmd_silence = [
+                    'ffmpeg', '-y',
+                    '-f', 'lavfi',
+                    '-i', f'anullsrc=channel_layout=stereo:sample_rate=44100',
+                    '-t', str(gap_duration_sec),
+                    '-c:a', 'pcm_s16le',
+                    str(silence_file)
+                ]
+                subprocess.run(cmd_silence, capture_output=True, text=True, timeout=30, check=True)
+                all_segments.append(str(silence_file))
+                temp_files_created.append(silence_file)
+
+            # Convert TTS file to WAV format for concat
+            wav_file = temp_dir / f"s_{idx}.wav"
+            cmd_convert = [
+                'ffmpeg', '-y',
+                '-i', str(file_path),
+                '-ar', '44100',
+                '-ac', '2',
+                '-c:a', 'pcm_s16le',
+                str(wav_file)
+            ]
+            subprocess.run(cmd_convert, capture_output=True, text=True, timeout=30, check=True)
+            all_segments.append(str(wav_file))
+            temp_files_created.append(wav_file)
+
+            # Update current time - use actual TTS duration
+            actual_duration_ms = int(actual_duration_sec * 1000)
+            current_time_ms = start_ms + actual_duration_ms
+
+        # Add final silence to reach total duration
+        if current_time_ms < total_duration_ms:
+            final_gap_sec = (total_duration_ms - current_time_ms) / 1000.0
+            final_silence_file = temp_dir / "sil_f.wav"
+
+            cmd_final_silence = [
+                'ffmpeg', '-y',
+                '-f', 'lavfi',
+                '-i', f'anullsrc=channel_layout=stereo:sample_rate=44100',
+                '-t', str(final_gap_sec),
+                '-c:a', 'pcm_s16le',
+                str(final_silence_file)
+            ]
+            subprocess.run(cmd_final_silence, capture_output=True, text=True, timeout=30, check=True)
+            all_segments.append(str(final_silence_file))
+            temp_files_created.append(final_silence_file)
+
+        # Create concat file list (use absolute paths to avoid path issues)
+        concat_file = temp_dir / "c.txt"
+        with open(concat_file, 'w', encoding='utf-8') as f:
+            for seg_file in all_segments:
+                # Resolve to absolute path and convert backslashes to forward slashes for ffmpeg
+                seg_file_abs = str(Path(seg_file).resolve()).replace('\\', '/')
+                f.write(f"file '{seg_file_abs}'\n")
+        temp_files_created.append(concat_file)
+
+        # Use concat demuxer to combine all files
+        cmd = [
+            'ffmpeg', '-y',
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', str(concat_file),
+            '-c:a', 'pcm_s16le',
+            '-ar', '44100',
+            '-ac', '2',
+            str(output_path)
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+
+        if result.returncode != 0:
+            return False, f"Błąd ffmpeg przy łączeniu TTS: {result.stderr}", temp_files_created
+
+        if not Path(output_path).exists():
+            return False, f"Błąd: Plik TTS nie został utworzony: {output_path}", temp_files_created
+
+        return True, f"Ścieżka TTS utworzona: {output_path}", temp_files_created
+
+    except subprocess.TimeoutExpired:
+        return False, "Błąd: Łączenie TTS przerwane (timeout)", []
+    except subprocess.CalledProcessError as e:
+        return False, f"Błąd przy przetwarzaniu segmentów TTS: {e}", []
+    except Exception as e:
+        return False, f"Błąd przy tworzeniu ścieżki TTS: {str(e)}", []
