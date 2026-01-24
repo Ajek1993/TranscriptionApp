@@ -152,6 +152,7 @@ def build_ytdlp_audio_download_cmd(url: str, output_file: str) -> list:
         '--audio-format', 'wav',
         '--audio-quality', '0',
         '--restrict-filenames',
+        '--no-progress',
         '-o', str(output_file),
         url
     ]
@@ -166,6 +167,7 @@ def build_ytdlp_video_download_cmd(url: str, output_file: str, quality: str = "1
         '-f', format_str,
         '--merge-output-format', 'mp4',
         '--restrict-filenames',
+        '--no-progress',
         '-o', str(output_file),
         url
     ]

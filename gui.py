@@ -46,11 +46,6 @@ def create_interface():
 
     with gr.Blocks(title="Aplikacja Transkrypcyjna") as app:
         gr.Markdown("# Aplikacja Transkrypcyjna")
-        gr.Markdown("### Etap 2: Zakładka Transkrypcja - zaimplementowana ✓")
-        gr.Markdown("### Etap 3: Zakładka Dubbing / Napisy - zaimplementowana ✓")
-        gr.Markdown("### Etap 4: Zakładka Pobieranie - zaimplementowana ✓")
-        gr.Markdown("### Etap 5: Sekcja Output i Progress - zaimplementowana ✓")
-        gr.Markdown("### Etap 6: Polishing i optymalizacja - zaimplementowana ✓")
 
         # Placeholder for tabs (will be implemented in later stages)
         with gr.Tabs():
@@ -230,9 +225,9 @@ def create_interface():
             with gr.Tab("Dubbing / Napisy"):
                 # 3.1 Komponenty źródła
                 dubbing_source_type = gr.Radio(
-                    choices=["YouTube URL", "Plik lokalny", "Plik SRT"],
+                    choices=["YouTube URL", "Plik lokalny"],
                     value="YouTube URL",
-                    label="Źródło"
+                    label="Źródło wideo"
                 )
 
                 dubbing_youtube_url = gr.Textbox(
@@ -250,6 +245,11 @@ def create_interface():
                 )
 
                 dubbing_video_file_status = gr.HTML(value="")
+
+                dubbing_use_srt = gr.Checkbox(
+                    label="Użyj pliku SRT (gdy odznaczone - auto-transkrypcja)",
+                    value=False
+                )
 
                 dubbing_srt_file = gr.File(
                     label="Plik SRT",
@@ -394,21 +394,16 @@ def create_interface():
                     if choice == "YouTube URL":
                         return (
                             gr.update(visible=True),   # youtube_url
-                            gr.update(visible=False),  # video_file
-                            gr.update(visible=False)   # srt_file
+                            gr.update(visible=False)   # video_file
                         )
-                    elif choice == "Plik lokalny":
+                    else:  # Plik lokalny
                         return (
-                            gr.update(visible=False),
-                            gr.update(visible=True),
-                            gr.update(visible=False)
+                            gr.update(visible=False),  # youtube_url
+                            gr.update(visible=True)    # video_file
                         )
-                    else:  # Plik SRT
-                        return (
-                            gr.update(visible=False),
-                            gr.update(visible=False),
-                            gr.update(visible=True)
-                        )
+
+                def toggle_dubbing_srt(checkbox_value):
+                    return gr.update(visible=checkbox_value)  # pokazuje/ukrywa dubbing_srt_file
 
                 def toggle_tts_settings(enabled):
                     return gr.update(visible=enabled)
@@ -430,7 +425,13 @@ def create_interface():
                 dubbing_source_type.change(
                     fn=toggle_dubbing_source,
                     inputs=[dubbing_source_type],
-                    outputs=[dubbing_youtube_url, dubbing_video_file, dubbing_srt_file]
+                    outputs=[dubbing_youtube_url, dubbing_video_file]
+                )
+
+                dubbing_use_srt.change(
+                    fn=toggle_dubbing_srt,
+                    inputs=[dubbing_use_srt],
+                    outputs=[dubbing_srt_file]
                 )
 
                 # Real-time validation with debounce
@@ -480,6 +481,7 @@ def create_interface():
                         dubbing_source_type,
                         dubbing_youtube_url,
                         dubbing_video_file,
+                        dubbing_use_srt,
                         dubbing_srt_file,
                         enable_tts_dubbing,
                         burn_subtitles,
@@ -496,7 +498,19 @@ def create_interface():
                         fill_gaps,
                         min_pause,
                         max_gap,
-                        video_quality
+                        video_quality,
+                        # Parametry transkrypcji z zakładki Transkrypcja
+                        model,
+                        language,
+                        engine,
+                        enable_translation,
+                        source_lang,
+                        target_lang,
+                        device,
+                        timeout,
+                        whisperx_align,
+                        whisperx_diarize,
+                        hf_token
                     ],
                     outputs=[dubbing_status, dubbing_output]
                 )

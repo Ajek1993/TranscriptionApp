@@ -198,11 +198,15 @@ def handle_transcription(
         status_messages.append(error_msg)
         return "\n".join(status_messages), None
     finally:
-        # Clean up temporary files
+        # Clean up temporary files and directories
         for temp_file in temp_files:
             try:
-                if Path(temp_file).exists():
-                    Path(temp_file).unlink()
+                temp_path = Path(temp_file)
+                if temp_path.exists():
+                    if temp_path.is_dir():
+                        shutil.rmtree(temp_path)
+                    else:
+                        temp_path.unlink()
             except Exception:
                 pass
         # Clear CUDA cache after operation
@@ -213,6 +217,7 @@ def handle_dubbing(
     source_type: str,
     youtube_url: str,
     video_file: Optional[object],
+    use_srt: bool,
     srt_file: Optional[object],
     enable_tts_dubbing: bool,
     burn_subtitles: bool,
@@ -230,16 +235,29 @@ def handle_dubbing(
     min_pause: int,
     max_gap: int,
     video_quality: str,
+    # Parametry transkrypcji z zakładki Transkrypcja
+    transcribe_model: str,
+    transcribe_language: str,
+    transcribe_engine: str,
+    transcribe_enable_translation: bool,
+    transcribe_source_lang: str,
+    transcribe_target_lang: str,
+    transcribe_device: str,
+    transcribe_timeout: int,
+    transcribe_whisperx_align: bool,
+    transcribe_whisperx_diarize: bool,
+    transcribe_hf_token: str,
     progress=gr.Progress()
 ) -> Tuple[str, Optional[str]]:
     """
     Handler for dubbing/subtitles tab.
 
     Args:
-        source_type: "YouTube URL", "Plik lokalny", or "Plik SRT"
+        source_type: "YouTube URL" or "Plik lokalny" (video source only)
         youtube_url: YouTube URL string
         video_file: Uploaded video/audio file
-        srt_file: Uploaded SRT file
+        use_srt: Whether to use provided SRT file (False = auto-transcription)
+        srt_file: Uploaded SRT file (used only if use_srt is True)
         enable_tts_dubbing: Whether to enable TTS dubbing
         burn_subtitles: Whether to burn subtitles into video
         dubbing_type: "Wideo" or "Tylko audio WAV"
@@ -256,6 +274,17 @@ def handle_dubbing(
         min_pause: Minimum pause (ms)
         max_gap: Maximum gap (ms)
         video_quality: Video quality for YouTube downloads
+        transcribe_model: Whisper model size for auto-transcription
+        transcribe_language: Language code for auto-transcription
+        transcribe_engine: Transcription engine for auto-transcription
+        transcribe_enable_translation: Whether to enable translation for auto-transcription
+        transcribe_source_lang: Source language for translation
+        transcribe_target_lang: Target language for translation
+        transcribe_device: Device to use for auto-transcription
+        transcribe_timeout: Timeout for auto-transcription
+        transcribe_whisperx_align: Enable WhisperX alignment for auto-transcription
+        transcribe_whisperx_diarize: Enable WhisperX diarization for auto-transcription
+        transcribe_hf_token: HuggingFace token for diarization
         progress: Gradio progress tracker
 
     Returns:
@@ -323,45 +352,81 @@ def handle_dubbing(
             video_path = result
             status_messages.append(f"Plik lokalny: {video_path}")
 
-        else:  # Plik SRT
-            # Use provided SRT file
+        # Nowa logika SRT - walidacja checkboxa i pliku
+        if use_srt:
+            # Użytkownik chce użyć pliku SRT
             if srt_file is None:
-                return "Błąd: Proszę wybrać plik SRT.", None
-
-            if video_file is None:
-                return "Błąd: Plik SRT wymaga również pliku wideo/audio.", None
-
+                return "Błąd: Checkbox SRT zaznaczony, ale nie wybrano pliku.", None
             srt_file_path = srt_file.name if hasattr(srt_file, 'name') else str(srt_file)
-            video_file_path = video_file.name if hasattr(video_file, 'name') else str(video_file)
-
-            is_valid, result = validate_video_file(video_file_path)
-            if not is_valid:
-                return f"Błąd walidacji pliku wideo: {result}", None
-
-            video_path = result
             srt_path = srt_file_path
+            status_messages.append(f"Użyto pliku SRT: {srt_path}")
+        # else: use_srt jest False - nastąpi automatyczna transkrypcja w kolejnym kroku
 
-            status_messages.append(f"Plik SRT: {srt_path}")
-            status_messages.append(f"Plik wideo: {video_path}")
-
-        # === 2. Ładowanie/generowanie napisów SRT ===
-        progress(0.15, desc="Wczytywanie pliku SRT...")
-        if srt_path:
+        # === 2. Przygotowanie napisów SRT ===
+        if use_srt and srt_path:
+            # Wczytaj istniejący plik SRT
+            progress(0.15, desc="Wczytywanie pliku SRT...")
             status_messages.append("\n=== Wczytywanie pliku SRT ===")
             success, message, segments = parse_srt_file(srt_path)
             status_messages.append(message)
-
             if not success:
                 return "\n".join(status_messages), None
         else:
-            # Need to transcribe first
-            status_messages.append("\n=== Brak pliku SRT ===")
-            return "\n".join(status_messages) + "\nBłąd: Dla źródła YouTube/Plik lokalny potrzebny jest plik SRT.\nNajpierw wykonaj transkrypcję w zakładce Transkrypcja.", None
+            # AUTO-TRANSKRYPCJA
+            progress(0.15, desc="Automatyczna transkrypcja...")
+            status_messages.append("\n=== Automatyczna transkrypcja ===")
+            status_messages.append(f"Model: {transcribe_model}, Język: {transcribe_language}")
 
-        if not segments:
-            return "\n".join(status_messages) + "\nBłąd: Brak segmentów w pliku SRT.", None
+            # Ekstrakcja audio z wideo
+            status_messages.append("\n--- Ekstrakcja audio ---")
+            success, message, audio_path = extract_audio_from_video(video_path, output_dir="files")
+            status_messages.append(message)
+            if not success:
+                return "\n".join(status_messages), None
+            temp_files.append(audio_path)
 
-        status_messages.append(f"Wczytano {len(segments)} segmentów")
+            # Transkrypcja
+            progress(0.25, desc="Transkrypcja audio...")
+            success, message, segments = transcribe_chunk(
+                wav_path=audio_path,
+                model_size=transcribe_model,
+                language=transcribe_language if transcribe_language != "auto" else None,
+                engine=transcribe_engine,
+                segment_progress_bar=None,
+                timeout_seconds=int(transcribe_timeout),
+                whisperx_align=transcribe_whisperx_align,
+                whisperx_diarize=transcribe_whisperx_diarize,
+                hf_token=transcribe_hf_token if transcribe_hf_token else None,
+                force_device=transcribe_device
+            )
+            status_messages.append(message)
+            if not success or not segments:
+                return "\n".join(status_messages), None
+
+            # Tłumaczenie (opcjonalne)
+            if transcribe_enable_translation:
+                progress(0.35, desc="Tłumaczenie...")
+                status_messages.append("\n--- Tłumaczenie ---")
+                success, message, segments, detected_lang = translate_segments(
+                    segments=segments,
+                    source_lang=transcribe_source_lang,
+                    target_lang=transcribe_target_lang
+                )
+                status_messages.append(message)
+                if not success:
+                    return "\n".join(status_messages), None
+
+            # Zapis SRT do pliku tymczasowego
+            status_messages.append("\n--- Zapis SRT ---")
+            temp_srt_path = Path("files") / f"auto_{Path(video_path).stem}.srt"
+            success, message = write_srt(segments, str(temp_srt_path))
+            status_messages.append(message)
+            if not success:
+                return "\n".join(status_messages), None
+            srt_path = str(temp_srt_path)
+            temp_files.append(srt_path)
+
+        status_messages.append(f"Liczba segmentów: {len(segments)}")
 
         # === 3. Tryb lektora (łączenie segmentów) ===
         if narrator_mode and enable_tts_dubbing:
@@ -442,7 +507,7 @@ def handle_dubbing(
 
             # Combine TTS segments into single track
             tts_combined_path = Path("files") / f"tts_combined_{Path(video_path).stem}.wav"
-            success, message = create_tts_audio_track(
+            success, message, tts_temp_files = create_tts_audio_track(
                 segment_timings,
                 adjusted_total_duration_ms,
                 str(tts_combined_path)
@@ -454,6 +519,11 @@ def handle_dubbing(
 
             tts_audio_path = str(tts_combined_path)
             temp_files.append(tts_audio_path)
+
+            # Add TTS temp files and directory to cleanup list
+            if success:
+                temp_files.extend(tts_temp_files)
+                temp_files.append(tts_output_dir)  # Will clean up entire directory
 
         # === 7. Miksowanie audio (jeśli dubbing włączony) ===
         final_audio_path = None
@@ -567,11 +637,15 @@ def handle_dubbing(
         status_messages.append(error_msg)
         return "\n".join(status_messages), None
     finally:
-        # Clean up temporary files
+        # Clean up temporary files and directories
         for temp_file in temp_files:
             try:
-                if Path(temp_file).exists():
-                    Path(temp_file).unlink()
+                temp_path = Path(temp_file)
+                if temp_path.exists():
+                    if temp_path.is_dir():
+                        shutil.rmtree(temp_path)
+                    else:
+                        temp_path.unlink()
             except Exception:
                 pass
         # Clear CUDA cache after operation
