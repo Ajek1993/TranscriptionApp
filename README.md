@@ -644,7 +644,24 @@ docker-compose run --rm transcribe python -c "import torch; print('GPU:', torch.
 
 ## Historia zmian
 
-### v4.3 (Obecna)
+### v4.4 (Obecna - branch openai)
+
+- **Tryb lektora (narrator mode):** Nowy tryb optymalizujący synchronizację dubbingu TTS
+  - Flaga `--narrator-mode` aktywuje tryb lektora z domyślnym `--merge-gap 100`
+  - Parametr `--merge-gap` kontroluje łączenie segmentów (50-300 ms)
+  - Mniejszy merge-gap (50) = więcej segmentów, lepsza synchronizacja dla spokojnych narracji
+  - Większy merge-gap (300) = mniej segmentów, płynniejsze czytanie dla szybkiej mowy
+- **Zarządzanie pamięcią GPU:** Nowa funkcja `clear_cuda_cache()` do czyszczenia pamięci CUDA po transkrypcji
+- **Sprawdzanie VRAM:** Funkcja `check_vram_for_model()` automatycznie weryfikuje dostępność pamięci dla modelu
+- **Predykcja overflowu:** Ostrzeżenia przed przepełnieniem VRAM przy dużych modelach
+- **Usunięcie faster-whisper:** Zastąpienie problematycznego faster-whisper przez standardowy OpenAI Whisper
+- **Rozszerzenie tłumacza:** Dodanie wsparcia dla dodatkowych języków w module tłumaczenia
+- **Poprawki Coqui XTTS:** Naprawy i optymalizacje dla modelu XTTS v2
+- **Parametr speed:** Nowa kontrola prędkości odtwarzania w niektórych trybach
+- **Nowy moduł srt_reader.py:** Moduł do wczytywania i parsowania istniejących plików SRT
+- **Aktualizacja zależności:** Zaktualizowano requirements.txt po usunięciu faster-whisper
+
+### v4.3
 
 - **Napisy dwujęzyczne (ASS):** Nowa funkcjonalność `--dual-language` do wgrywania napisów z jednoczesnym wyświetlaniem oryginału i tłumaczenia
 - **Format ASS:** Wsparcie dla plików ASS (Advanced SubStation Alpha) obok SRT

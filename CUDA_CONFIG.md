@@ -13,7 +13,7 @@
 
 ```bash
 # Przejdź do katalogu projektu
-cd C:\Users\Arkadiusz\Desktop\ATD\PROJEKT_TRANSKRYPCJA
+cd <katalog-projektu>
 
 # Stwórz nowe środowisko .venv
 py -3.11 -m venv .venv
@@ -46,12 +46,6 @@ pip install torch==2.3.1 torchaudio==2.3.1 --index-url https://download.pytorch.
 **Czas:** ~5-10 min
 **Note:** Bez torchvision (nie jest używane w projekcie, tak samo jak Docker)
 
-### 5. (Opcjonalnie) Zainstaluj openai-whisper
-
-```bash
-pip install openai-whisper
-```
-
 ## Weryfikacja
 
 ### Test 1: PyTorch CUDA
@@ -71,7 +65,7 @@ GPU: True
 ### Test 2: GPU Detection
 
 ```bash
-python -c "from transcribe import detect_device; device, info = detect_device(); print(f'Device: {device}'); print(f'Info: {info}')"
+python -c "from data.device_manager import detect_device; device, info = detect_device(); print(f'Device: {device}'); print(f'Info: {info}')"
 ```
 
 **Oczekiwany output:**
@@ -116,7 +110,7 @@ pip install torch==2.3.1 torchaudio==2.3.1 --index-url https://download.pytorch.
    ```bash
    python -c "import sys; print(sys.executable)"
    ```
-   Powinno pokazać: `C:\Users\Arkadiusz\Desktop\ATD\PROJEKT_TRANSKRYPCJA\.venv\Scripts\python.exe`
+   Powinno pokazać: `<katalog-projektu>\.venv\Scripts\python.exe`
 
 ### Problem: Brak miejsca na dysku podczas instalacji
 
@@ -157,10 +151,23 @@ transformers: 4.48.0 (pinned, identyczne jak Docker)
 - **RTX 3070** ma 8 GB VRAM - wszystkie modele Whisper (tiny-large) mieszczą się w pamięci
 - Środowisko `.venv` **MUSI** być aktywowane przed każdym użyciem
 
+## Nowe funkcje zarządzania GPU
+
+Projekt zawiera zaawansowane funkcje zarządzania pamięcią GPU w `data/device_manager.py`:
+
+- **check_vram_for_model()** - automatycznie sprawdza czy VRAM wystarczy dla wybranego modelu
+  i wyświetla ostrzeżenie jeśli model może nie zmieścić się w pamięci
+
+- **clear_cuda_cache()** - czyści nieużywaną pamięć CUDA cache po operacjach GPU
+
+- **get_gpu_memory_info()** - wyświetla aktualne użycie pamięci GPU (allocated/total/free)
+
+Te funkcje są automatycznie wywoływane podczas transkrypcji i generowania TTS.
+
 ## Aktywacja środowiska (za każdym razem)
 
 ```bash
-cd C:\Users\Arkadiusz\Desktop\ATD\PROJEKT_TRANSKRYPCJA
+cd <katalog-projektu>
 .venv\Scripts\activate
 ```
 
