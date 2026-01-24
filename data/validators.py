@@ -72,6 +72,98 @@ def validate_youtube_url(url: str) -> bool:
     return bool(re.match(youtube_regex, url))
 
 
+def validate_youtube_url_with_message(url: str) -> Tuple[bool, str]:
+    """
+    Validate YouTube URL and return user-friendly error message.
+
+    Args:
+        url: The URL to validate
+
+    Returns:
+        Tuple of (is_valid: bool, message: str)
+        - If valid: (True, "✓ URL YouTube jest poprawny")
+        - If invalid: (False, error_message)
+    """
+    if not url or not url.strip():
+        return False, "URL jest pusty"
+
+    url = url.strip()
+
+    # Check if it starts with http/https
+    if not url.startswith(('http://', 'https://')):
+        return False, "URL musi zaczynać się od http:// lub https://"
+
+    # Validate YouTube format
+    youtube_regex = r'(https?://)?(www\.)?(youtube|youtu|youtube-nocookie)\.(com|be)/.+$'
+    if not re.match(youtube_regex, url):
+        return False, "Nieprawidłowy format URL YouTube"
+
+    return True, "✓ URL YouTube jest poprawny"
+
+
+def validate_file_extension(file_path: str, allowed_extensions: set) -> Tuple[bool, str]:
+    """
+    Validate file extension and return user-friendly error message.
+
+    Args:
+        file_path: Path to the file
+        allowed_extensions: Set of allowed extensions (e.g., {'.mp4', '.mkv'})
+
+    Returns:
+        Tuple of (is_valid: bool, message: str)
+    """
+    if not file_path:
+        return False, "Ścieżka pliku jest pusta"
+
+    path = Path(file_path)
+    ext = path.suffix.lower()
+
+    if not ext:
+        return False, "Plik nie ma rozszerzenia"
+
+    if ext not in allowed_extensions:
+        allowed_list = ', '.join(sorted(allowed_extensions))
+        return False, f"Nieobsługiwany format: {ext}. Wspierane: {allowed_list}"
+
+    return True, f"✓ Plik {ext} jest obsługiwany"
+
+
+def validate_audio_file(file_path: str) -> Tuple[bool, str]:
+    """
+    Validate that the provided path is a valid, supported audio file.
+
+    Args:
+        file_path: Path to the audio file
+
+    Returns:
+        Tuple of (is_valid: bool, message: str)
+    """
+    SUPPORTED_AUDIO_EXTENSIONS = {'.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg'}
+    return validate_file_extension(file_path, SUPPORTED_AUDIO_EXTENSIONS)
+
+
+def validate_srt_file(file_path: str) -> Tuple[bool, str]:
+    """
+    Validate that the provided path is a valid SRT file.
+
+    Args:
+        file_path: Path to the SRT file
+
+    Returns:
+        Tuple of (is_valid: bool, message: str)
+    """
+    if not file_path:
+        return False, "Ścieżka pliku jest pusta"
+
+    path = Path(file_path)
+    ext = path.suffix.lower()
+
+    if ext != '.srt':
+        return False, "Plik musi mieć rozszerzenie .srt"
+
+    return True, "✓ Plik SRT jest poprawny"
+
+
 def validate_video_file(file_path: str) -> Tuple[bool, str]:
     """
     Validate that the provided path is a valid, supported video file.
