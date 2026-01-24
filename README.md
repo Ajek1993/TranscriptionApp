@@ -14,6 +14,8 @@ Kod aplikacji został zorganizowany w modularną architekturę:
 - **transcribe.py** - Główny orchestrator CLI, parsowanie argumentów i orchestracja pipeline'ów
 
 **Moduły pomocnicze** (katalog data/):
+- **gui/config.py** - Konfiguracja GUI (modele, języki, głosy TTS)
+- **gui/handlers.py** - Handlery zdarzeń GUI (transkrypcja, dubbing, pobieranie)
 - **output_manager.py** - Klasa OutputManager do formatowania komunikatów (stage headers, info, success, warnings)
 - **command_builders.py** - Budowanie komend FFmpeg i yt-dlp (audio/video extraction, splitting, merging, SRT/ASS support)
 - **validators.py** - Walidacja URL/plików, sprawdzanie zależności (ffmpeg, yt-dlp, TTS engines)
@@ -34,6 +36,12 @@ Wszystkie moduły są zorganizowane jako acykliczny graf zależności (DAG), co 
 
 ## Funkcje
 
+### Interfejs użytkownika
+- **GUI (Gradio)**: Nowoczesny interfejs graficzny z 3 zakładkami (Transkrypcja, Dubbing/Napisy, Pobieranie)
+- **CLI**: Pełna obsługa wiersza poleceń dla zaawansowanych użytkowników
+- **Walidacja w czasie rzeczywistym**: Sprawdzanie URL i plików podczas wpisywania
+
+### Transkrypcja i przetwarzanie
 - **Transkrypcja z YouTube**: Pobieranie audio z YouTube w formacie WAV
 - **Pobieranie wideo z YouTube**: Pobieranie pełnego wideo w jakości 720p-4K
 - **Transkrypcja z plików lokalnych**: Obsługa MP4, MKV, AVI, MOV
@@ -157,6 +165,43 @@ Dla GPU:
 ```bash
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 ```
+
+## Interfejs GUI (Gradio)
+
+Aplikacja posiada nowoczesny interfejs graficzny oparty na Gradio z trzema zakładkami:
+
+### Uruchomienie GUI
+
+```bash
+python gui.py
+```
+
+GUI uruchomi się na `http://127.0.0.1:7860` i automatycznie otworzy przeglądarkę.
+
+### Zakładki GUI
+
+#### 1. Transkrypcja
+- **Źródło**: YouTube URL lub plik lokalny (mp4, mkv, avi, mov)
+- **Ustawienia**: Model Whisper, język, silnik transkrypcji
+- **Tłumaczenie**: Opcjonalne tłumaczenie między językami
+- **Zaawansowane**: Urządzenie (GPU/CPU), WhisperX alignment/diarization
+
+#### 2. Dubbing / Napisy
+- **Źródło wideo**: YouTube URL lub plik lokalny
+- **Opcje dubbingu**: Dubbing TTS, wpalanie napisów, napisy dwujęzyczne
+- **Ustawienia TTS**: Wybór silnika (Edge/Coqui), głos, głośność
+- **Tryb lektora**: Optymalizacja synchronizacji dubbingu
+- **Zaawansowane**: Maks. długość segmentu, wypełnianie luk, jakość wideo
+
+#### 3. Pobieranie
+- **Pobieranie z YouTube**: Wideo lub tylko audio
+- **Jakość**: Wybór jakości wideo (720p-4K) lub audio
+
+### Funkcje GUI
+- **Walidacja w czasie rzeczywistym**: Sprawdzanie URL i plików podczas wpisywania
+- **Podgląd statusu**: Komunikaty na żywo podczas przetwarzania
+- **Pobieranie plików**: Bezpośrednie pobieranie wygenerowanych plików
+- **Dynamiczne formularze**: Pokazywanie/ukrywanie pól w zależności od wyboru
 
 ## Przykłady użycia - Wszystkie funkcje
 
@@ -644,7 +689,59 @@ docker-compose run --rm transcribe python -c "import torch; print('GPU:', torch.
 
 ## Historia zmian
 
-### v4.3 (Obecna)
+### v5.0 (2025-01-25 - branch openai)
+
+**Nowy interfejs GUI (Gradio):**
+- **Trzy zakładki**: Transkrypcja, Dubbing/Napisy, Pobieranie
+- **Walidacja w czasie rzeczywistym**: Sprawdzanie URL YouTube i plików lokalnych
+- **Dynamiczne formularze**: Pokazywanie/ukrywanie pól w zależności od wyboru
+- **Pełna integracja**: Wszystkie funkcje CLI dostępne w GUI
+
+**Nowe moduły:**
+- **gui.py** - Główny plik GUI z Gradio
+- **data/gui/config.py** - Konfiguracja GUI (modele, języki, głosy)
+- **data/gui/handlers.py** - Handlery zdarzeń dla wszystkich zakładek
+- **data/validators.py** - Walidacja URL, plików wideo, plików SRT
+
+**Zakładka Transkrypcja:**
+- Źródło: YouTube URL lub plik lokalny
+- Model Whisper: tiny → large-v3
+- Silniki: Whisper (domyślny), WhisperX
+- Tłumaczenie z wyborem języka źródłowego i docelowego
+- Zaawansowane: urządzenie (auto/cuda/cpu), WhisperX alignment/diarization
+
+**Zakładka Dubbing/Napisy:**
+- Źródło wideo: YouTube URL lub plik lokalny
+- Użyj własnego pliku SRT lub auto-transkrypcja
+- Opcje: Dubbing TTS, wpal napisy, napisy dwujęzyczne
+- Typ wyjścia: Wideo lub tylko audio WAV
+- Ustawienia TTS: Edge TTS lub Coqui TTS
+- Tryb lektora z kontrolą merge gap
+- Zaawansowane: segmentacja, wypełnianie luk, jakość wideo
+
+**Zakładka Pobieranie:**
+- Pobieranie wideo z YouTube (720p-4K)
+- Pobieranie tylko audio (WAV/MP3)
+- Wybór jakości wideo/audio
+
+### v4.4 (2025-01-23 - branch openai)
+
+- **Tryb lektora (narrator mode):** Nowy tryb optymalizujący synchronizację dubbingu TTS
+  - Flaga `--narrator-mode` aktywuje tryb lektora z domyślnym `--merge-gap 100`
+  - Parametr `--merge-gap` kontroluje łączenie segmentów (50-300 ms)
+  - Mniejszy merge-gap (50) = więcej segmentów, lepsza synchronizacja dla spokojnych narracji
+  - Większy merge-gap (300) = mniej segmentów, płynniejsze czytanie dla szybkiej mowy
+- **Zarządzanie pamięcią GPU:** Nowa funkcja `clear_cuda_cache()` do czyszczenia pamięci CUDA po transkrypcji
+- **Sprawdzanie VRAM:** Funkcja `check_vram_for_model()` automatycznie weryfikuje dostępność pamięci dla modelu
+- **Predykcja overflowu:** Ostrzeżenia przed przepełnieniem VRAM przy dużych modelach
+- **Usunięcie faster-whisper:** Zastąpienie problematycznego faster-whisper przez standardowy OpenAI Whisper
+- **Rozszerzenie tłumacza:** Dodanie wsparcia dla dodatkowych języków w module tłumaczenia
+- **Poprawki Coqui XTTS:** Naprawy i optymalizacje dla modelu XTTS v2
+- **Parametr speed:** Nowa kontrola prędkości odtwarzania w niektórych trybach
+- **Nowy moduł srt_reader.py:** Moduł do wczytywania i parsowania istniejących plików SRT
+- **Aktualizacja zależności:** Zaktualizowano requirements.txt po usunięciu faster-whisper
+
+### v4.3
 
 - **Napisy dwujęzyczne (ASS):** Nowa funkcjonalność `--dual-language` do wgrywania napisów z jednoczesnym wyświetlaniem oryginału i tłumaczenia
 - **Format ASS:** Wsparcie dla plików ASS (Advanced SubStation Alpha) obok SRT

@@ -854,7 +854,7 @@ def create_tts_audio_track(
     segment_timings: List[SegmentTiming],
     total_duration_ms: int,
     output_path: str
-) -> Tuple[bool, str]:
+) -> Tuple[bool, str, List[Path]]:
     """
     Combine TTS segments into a single audio track using concat demuxer file.
     This avoids command line length limits on Windows.
@@ -866,11 +866,11 @@ def create_tts_audio_track(
         output_path: Path to save the combined audio
 
     Returns:
-        Tuple of (success: bool, message: str)
+        Tuple of (success: bool, message: str, temp_files: List[Path])
     """
     try:
         if not segment_timings:
-            return False, "Błąd: Brak plików TTS do połączenia"
+            return False, "Błąd: Brak plików TTS do połączenia", []
 
         temp_dir = Path(output_path).parent
 
@@ -882,6 +882,9 @@ def create_tts_audio_track(
         # Create list of all audio segments with silence gaps
         all_segments = []
         current_time_ms = 0
+
+        # Track all created temp files for cleanup
+        temp_files_created: List[Path] = []
 
         for idx, timing in enumerate(sorted_segments):
             # Extract data from SegmentTiming (use adjusted timestamps)
@@ -905,6 +908,7 @@ def create_tts_audio_track(
                 ]
                 subprocess.run(cmd_silence, capture_output=True, text=True, timeout=30, check=True)
                 all_segments.append(str(silence_file))
+                temp_files_created.append(silence_file)
 
             # Convert TTS file to WAV format for concat
             wav_file = temp_dir / f"s_{idx}.wav"
@@ -918,6 +922,7 @@ def create_tts_audio_track(
             ]
             subprocess.run(cmd_convert, capture_output=True, text=True, timeout=30, check=True)
             all_segments.append(str(wav_file))
+            temp_files_created.append(wav_file)
 
             # Update current time - use actual TTS duration
             actual_duration_ms = int(actual_duration_sec * 1000)
@@ -938,14 +943,16 @@ def create_tts_audio_track(
             ]
             subprocess.run(cmd_final_silence, capture_output=True, text=True, timeout=30, check=True)
             all_segments.append(str(final_silence_file))
+            temp_files_created.append(final_silence_file)
 
-        # Create concat file list (short path)
+        # Create concat file list (use absolute paths to avoid path issues)
         concat_file = temp_dir / "c.txt"
         with open(concat_file, 'w', encoding='utf-8') as f:
             for seg_file in all_segments:
-                # Use forward slashes for ffmpeg compatibility
-                seg_file_unix = seg_file.replace('\\', '/')
-                f.write(f"file '{seg_file_unix}'\n")
+                # Resolve to absolute path and convert backslashes to forward slashes for ffmpeg
+                seg_file_abs = str(Path(seg_file).resolve()).replace('\\', '/')
+                f.write(f"file '{seg_file_abs}'\n")
+        temp_files_created.append(concat_file)
 
         # Use concat demuxer to combine all files
         cmd = [
@@ -962,16 +969,16 @@ def create_tts_audio_track(
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
 
         if result.returncode != 0:
-            return False, f"Błąd ffmpeg przy łączeniu TTS: {result.stderr}"
+            return False, f"Błąd ffmpeg przy łączeniu TTS: {result.stderr}", temp_files_created
 
         if not Path(output_path).exists():
-            return False, f"Błąd: Plik TTS nie został utworzony: {output_path}"
+            return False, f"Błąd: Plik TTS nie został utworzony: {output_path}", temp_files_created
 
-        return True, f"Ścieżka TTS utworzona: {output_path}"
+        return True, f"Ścieżka TTS utworzona: {output_path}", temp_files_created
 
     except subprocess.TimeoutExpired:
-        return False, "Błąd: Łączenie TTS przerwane (timeout)"
+        return False, "Błąd: Łączenie TTS przerwane (timeout)", []
     except subprocess.CalledProcessError as e:
-        return False, f"Błąd przy przetwarzaniu segmentów TTS: {e}"
+        return False, f"Błąd przy przetwarzaniu segmentów TTS: {e}", []
     except Exception as e:
-        return False, f"Błąd przy tworzeniu ścieżki TTS: {str(e)}"
+        return False, f"Błąd przy tworzeniu ścieżki TTS: {str(e)}", []
