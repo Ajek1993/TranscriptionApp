@@ -4,6 +4,7 @@ GUI Application - Main Entry Point
 Gradio interface for the Transcription App
 """
 
+import atexit
 import gradio as gr
 from data.gui import config
 from data.gui import handlers
@@ -605,6 +606,7 @@ def create_interface():
 
 
 if __name__ == "__main__":
+    atexit.register(handlers.cleanup_gradio_temp)
     print("Uruchamianie GUI...")
     print(f"Zaladowane modele: {', '.join(config.MODELS)}")
     print(f"Dostepne silniki: {', '.join(config.ENGINES)}")

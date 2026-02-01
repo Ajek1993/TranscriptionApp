@@ -2,6 +2,11 @@
 
 Wszystkie ważne zmiany w projekcie będą dokumentowane w tym pliku.
 
+## [5.0.2] - 2026-02-01
+
+### Naprawiono
+- Dodano automatyczne czyszczenie plików tymczasowych Gradio (AppData/Local/Temp/gradio) po zakończeniu transkrypcji, dubbingu oraz przy zamykaniu aplikacji
+
 ## [5.0.1] - 2026-02-01
 
 ### Zmieniono

@@ -17,6 +17,21 @@ from ..srt_writer import write_srt
 from ..device_manager import clear_cuda_cache
 import tempfile
 import shutil
+import os
+
+
+def cleanup_gradio_temp():
+    """Clean up Gradio temporary upload files."""
+    gradio_temp = Path(tempfile.gettempdir()) / "gradio"
+    if gradio_temp.exists():
+        for item in gradio_temp.iterdir():
+            try:
+                if item.is_dir():
+                    shutil.rmtree(item)
+                else:
+                    item.unlink()
+            except Exception:
+                pass
 
 
 def handle_transcription(
@@ -209,6 +224,8 @@ def handle_transcription(
                         temp_path.unlink()
             except Exception:
                 pass
+        # Clean up Gradio temp files
+        cleanup_gradio_temp()
         # Clear CUDA cache after operation
         clear_cuda_cache()
 
@@ -648,6 +665,8 @@ def handle_dubbing(
                         temp_path.unlink()
             except Exception:
                 pass
+        # Clean up Gradio temp files
+        cleanup_gradio_temp()
         # Clear CUDA cache after operation
         clear_cuda_cache()
 
