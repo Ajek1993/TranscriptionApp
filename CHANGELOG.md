@@ -2,6 +2,13 @@
 
 Wszystkie ważne zmiany w projekcie będą dokumentowane w tym pliku.
 
+## [5.0.1] - 2026-02-01
+
+### Zmieniono
+- Zaktualizowano komendy yt-dlp dla kompatybilności z YouTube 2026 (nowe player_client: android_vr, web_safari)
+- Rozszerzono formaty pobierania audio/wideo o dodatkowe warianty (webm fallback)
+- Podniesiono minimalną wersję yt-dlp do >=2026.01.31
+
 ## [5.0.0] - 2025-01-25
 
 ### Dodano

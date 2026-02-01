@@ -144,23 +144,24 @@ def build_ffmpeg_subtitle_burn_cmd(
 
 
 def build_ytdlp_audio_download_cmd(url: str, output_file: str) -> list:
-    """Build yt-dlp command to download audio only."""
+    """Build yt-dlp command to download audio only (2026 YouTube compatible)."""
     return [
         'yt-dlp',
-        '-f', 'bestaudio/best',
+        '-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
         '-x',
         '--audio-format', 'wav',
         '--audio-quality', '0',
         '--restrict-filenames',
         '--no-progress',
+        '--extractor-args', 'youtube:player_client=android_vr,web_safari',
         '-o', str(output_file),
         url
     ]
 
 
 def build_ytdlp_video_download_cmd(url: str, output_file: str, quality: str = "1080") -> list:
-    """Build yt-dlp command to download video."""
-    format_str = f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best"
+    """Build yt-dlp command to download video (2026 YouTube compatible)."""
+    format_str = f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={quality}][ext=webm]+bestaudio[ext=webm]/bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best"
 
     return [
         'yt-dlp',
@@ -168,6 +169,7 @@ def build_ytdlp_video_download_cmd(url: str, output_file: str, quality: str = "1
         '--merge-output-format', 'mp4',
         '--restrict-filenames',
         '--no-progress',
+        '--extractor-args', 'youtube:player_client=android_vr,web_safari',
         '-o', str(output_file),
         url
     ]

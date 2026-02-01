@@ -19,7 +19,8 @@
       "Bash(grep:*)",
       "Bash(docker-compose build:*)",
       "Bash(cp:*)",
-      "Bash(export PATH=\"$PATH:/c/Users/ajek1/.cargo/bin\")"
+      "Bash(yt-dlp:*)",
+      "WebFetch(domain:github.com)"
     ],
     "deny": [],
     "ask": []

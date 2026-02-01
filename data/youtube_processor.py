@@ -25,7 +25,8 @@ def get_video_title(url: str) -> str:
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,  # Tłumi wewnętrzne ostrzeżenia yt-dlp
-            'ignoreerrors': True  # Ignoruje błędy cicho
+            'ignoreerrors': True,  # Ignoruje błędy cicho
+            'extractor_args': {'youtube': {'player_client': ['android_vr,web_safari']}},
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
