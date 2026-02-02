@@ -2,6 +2,11 @@
 
 Wszystkie ważne zmiany w projekcie będą dokumentowane w tym pliku.
 
+## [5.0.3] - 2026-02-02
+
+### Zmieniono
+- Domyślny silnik transkrypcji zmieniony z OpenAI Whisper na WhisperX (CLI i GUI)
+
 ## [5.0.2] - 2026-02-01
 
 ### Naprawiono

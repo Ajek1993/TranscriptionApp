@@ -17,8 +17,8 @@ MODELS = [
 
 # Silniki transkrypcji
 ENGINES = [
-    "whisper",
-    "whisperx"
+    "whisperx",
+    "whisper"
 ]
 
 # Silniki TTS
@@ -120,7 +120,7 @@ DEFAULT_MIN_PAUSE = 150  # Minimalna pauza w ms
 DEFAULT_MAX_GAP = 3000  # Maksymalna luka w ms
 DEFAULT_VIDEO_QUALITY = "1080"  # Domyslna jakosc wideo
 DEFAULT_MODEL = "base"  # Domyslny model Whisper
-DEFAULT_ENGINE = "whisper"  # Domyslny silnik transkrypcji
+DEFAULT_ENGINE = "whisperx"  # Domyslny silnik transkrypcji
 DEFAULT_TTS_ENGINE = "edge"  # Domyslny silnik TTS
 DEFAULT_LANGUAGE = "pl"  # Domyslny jezyk
 DEFAULT_VOICE_EDGE = "pl-PL-MarekNeural"  # Domyslny glos Edge TTS

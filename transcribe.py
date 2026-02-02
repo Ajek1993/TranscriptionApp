@@ -921,9 +921,9 @@ def main():
                        help='Rozmiar modelu Whisper (domyślnie: base)')
     transcription_group.add_argument('--language', type=str, default=None,
                        help='Język transkrypcji (domyślnie: auto-detekcja)')
-    transcription_group.add_argument('--engine', default='whisper',
+    transcription_group.add_argument('--engine', default='whisperx',
                    choices=['whisper', 'whisperx'],
-                   help='Silnik transkrypcji (domyślnie: whisper)')
+                   help='Silnik transkrypcji (domyślnie: whisperx)')
     transcription_group.add_argument('-t', '--translate', type=str,
                        help='Tłumaczenie: auto-XX (autodetekcja→XX) lub XX-YY (np. pl-en, en-pl). '
                             'Przykłady: --translate auto-pl, --translate auto-en, --translate pl-en')

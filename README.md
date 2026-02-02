@@ -4,7 +4,7 @@ Narzędzie do automatycznej transkrypcji filmów z YouTube lub lokalnych plików
 
 ## Opis
 
-Aplikacja pobiera audio z YouTube lub tworzy je z lokalnych plików wideo, przetwarza je i generuje plik napisów SRT z wykorzystaniem modelu Whisper. Wspiera dwa silniki transkrypcji: OpenAI Whisper (domyślny, GPU) i WhisperX (zaawansowany z alignmentem i diaryzacją). Wspiera długie materiały audio poprzez automatyczny podział na fragmenty oraz opcjonalne tłumaczenie między polskim a angielskim. Nowa funkcjonalność dubbingu TTS pozwala na wygenerowanie polskiej ścieżki audio z synchronizacją czasową i mixowaniem z oryginalnym dźwiękiem.
+Aplikacja pobiera audio z YouTube lub tworzy je z lokalnych plików wideo, przetwarza je i generuje plik napisów SRT z wykorzystaniem modelu Whisper. Wspiera dwa silniki transkrypcji: WhisperX (domyślny, zaawansowany z alignmentem i diaryzacją) i OpenAI Whisper (podstawowy, GPU). Wspiera długie materiały audio poprzez automatyczny podział na fragmenty oraz opcjonalne tłumaczenie między polskim a angielskim. Nowa funkcjonalność dubbingu TTS pozwala na wygenerowanie polskiej ścieżki audio z synchronizacją czasową i mixowaniem z oryginalnym dźwiękiem.
 
 ## Architektura modularna
 
@@ -441,22 +441,7 @@ python transcribe.py "URL" --model medium
 
 Aplikacja obsługuje dwa silniki transkrypcji:
 
-### 1. OpenAI Whisper (domyślny)
-- **Użycie:** `--engine whisper`
-- **Urządzenie:** Automatycznie GPU/CUDA jeśli dostępne
-- **Zalety:** Szybki, dobra jakość, najprostszy w użyciu
-- **Wady:** Podstawowe timestampy
-
-**Użycie (domyślnie):**
-```bash
-# Docker
-docker-compose run --rm transcribe "URL" --model base
-
-# Natywnie
-python transcribe.py "URL" --model base
-```
-
-### 2. WhisperX (zaawansowany)
+### 1. WhisperX (domyślny)
 - **Użycie:** `--engine whisperx`
 - **Urządzenie:** Automatycznie GPU/CUDA jeśli dostępne
 - **Zalety:**
@@ -465,41 +450,56 @@ python transcribe.py "URL" --model base
   - Wysoką dokładność
 - **Wady:** Wolniejszy niż Whisper
 
-**Podstawowe użycie:**
+**Podstawowe użycie (domyślnie):**
 ```bash
 # Docker
-docker-compose run --rm transcribe "URL" --engine whisperx --model base
+docker-compose run --rm transcribe "URL" --model base
 
 # Natywnie
-python transcribe.py "URL" --engine whisperx --model base
+python transcribe.py "URL" --model base
 ```
 
 **Z word-level alignment:**
 ```bash
 # Docker
-docker-compose run --rm transcribe "URL" --engine whisperx --model base --whisperx-align
+docker-compose run --rm transcribe "URL" --model base --whisperx-align
 
 # Natywnie
-python transcribe.py "URL" --engine whisperx --model base --whisperx-align
+python transcribe.py "URL" --model base --whisperx-align
 ```
 
 **Z speaker diarization:**
 ```bash
 # Docker
-docker-compose run --rm transcribe "URL" --engine whisperx --model base \
+docker-compose run --rm transcribe "URL" --model base \
   --whisperx-diarize --hf-token YOUR_HF_TOKEN --whisperx-min-speakers 2
 
 # Natywnie
-python transcribe.py "URL" --engine whisperx --model base \
+python transcribe.py "URL" --model base \
   --whisperx-diarize --hf-token YOUR_HF_TOKEN --whisperx-min-speakers 2
+```
+
+### 2. OpenAI Whisper (alternatywny)
+- **Użycie:** `--engine whisper`
+- **Urządzenie:** Automatycznie GPU/CUDA jeśli dostępne
+- **Zalety:** Szybki, dobra jakość, najprostszy w użyciu
+- **Wady:** Podstawowe timestampy
+
+**Użycie:**
+```bash
+# Docker
+docker-compose run --rm transcribe "URL" --engine whisper --model base
+
+# Natywnie
+python transcribe.py "URL" --engine whisper --model base
 ```
 
 **Porównanie silników:**
 
 | Silnik | Szybkość | Jakość timestampów | GPU | Diarization |
 |--------|----------|-------------------|-----|-------------|
+| **whisperx** (domyślny) | ⚡⚡⚡ | ⭐⭐⭐⭐⭐ | ✅ Auto | ✅ |
 | whisper | ⚡⚡⚡⚡ | ⭐⭐⭐ | ✅ Auto | ❌ |
-| whisperx | ⚡⚡⚡ | ⭐⭐⭐⭐⭐ | ✅ Auto | ✅ |
 
 ## Silniki TTS (Text-to-Speech)
 
@@ -587,14 +587,14 @@ python transcribe.py "URL" --dub --tts-engine coqui --coqui-model tts_models/pl/
 ### 9. Wybór silnika transkrypcji
 
 ```bash
-# Docker - openai-whisper (domyślny)
-docker-compose run --rm transcribe "URL" --engine whisper
-
-# Docker - whisperx (zaawansowany)
+# Docker - whisperx (domyślny)
 docker-compose run --rm transcribe "URL" --engine whisperx
 
+# Docker - openai-whisper (alternatywny)
+docker-compose run --rm transcribe "URL" --engine whisper
+
 # Natywnie
-python transcribe.py "URL" --engine whisper
+python transcribe.py "URL" --engine whisperx
 ```
 
 ### 10. Wymuszone CPU (bez GPU)
