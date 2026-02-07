@@ -4,6 +4,12 @@ GUI Application - Main Entry Point
 Gradio interface for the Transcription App
 """
 
+# ===== WARNING SUPPRESSION =====
+# Musi być przed innymi importami, aby skutecznie tłumić ostrzeżenia
+import os
+from data.warning_suppressor import suppress_third_party_warnings
+suppress_third_party_warnings(debug_mode=False)
+
 from dotenv import load_dotenv
 load_dotenv()
 

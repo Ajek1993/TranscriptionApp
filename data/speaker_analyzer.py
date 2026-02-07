@@ -158,6 +158,24 @@ def analyze_speaker_gender(
             f"  {speaker}: {gender_pl} (pitch: {pitch_mean:.1f} Hz, pewność: {confidence:.0%})"
         )
 
+        # Szczegółowe statystyki pitch
+        pitch_min = float(np.min(pitches))
+        pitch_max = float(np.max(pitches))
+        q25 = float(np.percentile(pitches, 25))
+        q50 = float(np.percentile(pitches, 50))
+        q75 = float(np.percentile(pitches, 75))
+        segment_count = sum(1 for _, _, text in segments if _get_speaker_from_text(text) == speaker)
+
+        OutputManager.detail(
+            f"    Statystyki: min={pitch_min:.1f} Hz, max={pitch_max:.1f} Hz, std={pitch_std:.1f} Hz"
+        )
+        OutputManager.detail(
+            f"    Rozkład: 25%={q25:.1f} Hz, 50%={q50:.1f} Hz, 75%={q75:.1f} Hz"
+        )
+        OutputManager.detail(
+            f"    Próbek: {len(pitches)}, segmentów: {segment_count}"
+        )
+
     # Add unknown entries for speakers without pitch data
     for speaker in speakers:
         if speaker not in speaker_info:

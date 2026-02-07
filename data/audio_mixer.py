@@ -114,7 +114,8 @@ def mix_audio_tracks(
 def create_dubbed_video(
     original_video_path: str,
     mixed_audio_path: str,
-    output_video_path: str
+    output_video_path: str,
+    audio_bitrate: str = '320k'
 ) -> Tuple[bool, str]:
     """
     Create final dubbed video by combining original video with mixed audio.
@@ -123,12 +124,13 @@ def create_dubbed_video(
         original_video_path: Path to original video file
         mixed_audio_path: Path to mixed audio (original + TTS)
         output_video_path: Path to save dubbed video
+        audio_bitrate: Audio bitrate for AAC encoding (default: 320k)
 
     Returns:
         Tuple of (success: bool, message: str)
     """
     try:
-        cmd = build_ffmpeg_video_merge_cmd(original_video_path, mixed_audio_path, output_video_path)
+        cmd = build_ffmpeg_video_merge_cmd(original_video_path, mixed_audio_path, output_video_path, audio_bitrate)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
 
         if result.returncode != 0:
@@ -149,7 +151,8 @@ def burn_subtitles_to_video(
     video_path: str,
     subtitle_path: str,
     output_path: str,
-    subtitle_style: str = "FontName=Arial,FontSize=16,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,BorderStyle=4,Outline=0,Shadow=0,MarginV=20"
+    subtitle_style: str = "FontName=Arial,FontSize=16,PrimaryColour=&H00FFFFFF,BackColour=&H80000000,BorderStyle=4,Outline=0,Shadow=0,MarginV=20",
+    audio_bitrate: str = '320k'
 ) -> Tuple[bool, str]:
     """
     Burn (hardcode) subtitles into video permanently.
@@ -163,6 +166,7 @@ def burn_subtitles_to_video(
         subtitle_path: Path to subtitle file (.srt or .ass)
         output_path: Path to save output video with burned subtitles
         subtitle_style: ASS subtitle style string (only applied to SRT files)
+        audio_bitrate: Audio bitrate for AAC encoding (default: 320k)
 
     Returns:
         Tuple of (success: bool, message: str)
@@ -179,7 +183,7 @@ def burn_subtitles_to_video(
         print(f"Wideo: {video_path}")
         print(f"Napisy: {subtitle_path}")
 
-        cmd = build_ffmpeg_subtitle_burn_cmd(video_path, subtitle_path, output_path, subtitle_style)
+        cmd = build_ffmpeg_subtitle_burn_cmd(video_path, subtitle_path, output_path, subtitle_style, audio_bitrate)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
 
         if result.returncode != 0:

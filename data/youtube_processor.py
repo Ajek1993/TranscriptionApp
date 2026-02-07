@@ -174,13 +174,16 @@ def download_video(url: str, output_dir: str = ".", quality: str = "1080") -> Tu
         return False, f"Błąd przy pobieraniu wideo: {str(e)}", ""
 
 
-def extract_audio_from_video(video_path: str, output_dir: str = ".") -> Tuple[bool, str, str]:
+def extract_audio_from_video(video_path: str, output_dir: str = ".", high_quality: bool = False) -> Tuple[bool, str, str]:
     """
-    Extract audio from a local video file and convert to WAV (mono, 16kHz, PCM 16-bit).
+    Extract audio from a local video file and convert to WAV.
 
     Args:
         video_path: Path to the local video file
         output_dir: Directory to save the extracted audio
+        high_quality: If True, extract in high quality (stereo, 48kHz, 24-bit)
+                     for final video output. If False, extract in low quality
+                     (mono, 16kHz, 16-bit) for Whisper transcription.
 
     Returns:
         Tuple of (success: bool, message: str, audio_path: str)
@@ -190,12 +193,14 @@ def extract_audio_from_video(video_path: str, output_dir: str = ".") -> Tuple[bo
 
     # Generate output filename based on input video filename
     video_file = Path(video_path)
-    audio_file = output_path / f"{video_file.stem}.wav"
+    suffix = "_hq" if high_quality else ""
+    audio_file = output_path / f"{video_file.stem}{suffix}.wav"
 
     try:
-        print(f"Ekstrakcja audio z pliku wideo... ({video_path})")
+        quality_desc = "wysokiej jakości" if high_quality else "dla transkrypcji"
+        print(f"Ekstrakcja audio ({quality_desc}) z pliku wideo... ({video_path})")
 
-        cmd = build_ffmpeg_audio_extraction_cmd(video_path, audio_file)
+        cmd = build_ffmpeg_audio_extraction_cmd(video_path, audio_file, high_quality=high_quality)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
         if result.returncode != 0:

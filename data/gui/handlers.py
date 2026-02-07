@@ -494,14 +494,25 @@ def handle_dubbing(
             )
             status_messages.append(f"Połączono: {original_count} -> {len(segments)} segmentów")
 
-        # === 4. Ekstrakcja audio z wideo (potrzebne dla TTS i nie-TTS) ===
-        progress(0.25, desc="Ekstrakcja audio z wideo...")
-        status_messages.append("\n=== Ekstrakcja audio ===")
-        success, message, original_audio_path = extract_audio_from_video(video_path, output_dir="files")
-        status_messages.append(message)
-        if not success:
-            return "\n".join(status_messages), None
-        temp_files.append(original_audio_path)
+        # === 4. Ekstrakcja audio z wideo (tylko gdy potrzebne dla TTS/miksowania) ===
+        original_audio_path = None
+        if enable_tts_dubbing:
+            progress(0.25, desc="Ekstrakcja audio z wideo...")
+            status_messages.append("\n=== Ekstrakcja audio ===")
+
+            # Extract audio for TTS processing (low quality is sufficient)
+            success, message, original_audio_path = extract_audio_from_video(
+                video_path,
+                output_dir="files",
+                high_quality=False
+            )
+            status_messages.append(message)
+            if not success:
+                return "\n".join(status_messages), None
+
+            temp_files.append(original_audio_path)
+        else:
+            status_messages.append("\n=== Pominięto ekstrakcję audio (niepotrzebne bez dubbingu) ===")
 
         # === 5. Generowanie TTS ===
         tts_audio_path = None
@@ -619,25 +630,29 @@ def handle_dubbing(
                 return "\n".join(status_messages) + "\nBłąd: Brak pliku audio do zapisania.", None
 
         else:  # Wideo
-            progress(0.8, desc="Tworzenie wideo z dubbingiem...")
-            status_messages.append("\n=== Tworzenie wideo z dubbingiem ===")
+            progress(0.8, desc="Przygotowywanie wideo...")
+            status_messages.append("\n=== Przygotowywanie wideo ===")
 
-            if not final_audio_path:
-                return "\n".join(status_messages) + "\nBłąd: Brak ścieżki audio.", None
+            if enable_tts_dubbing and tts_audio_path:
+                # TTS dubbing is enabled - create dubbed video with mixed audio
+                status_messages.append("Tworzenie wideo z dubbingiem...")
+                dubbed_video_path = Path("files") / f"dubbed_{Path(video_path).stem}.mp4"
+                success, message = create_dubbed_video(
+                    original_video_path=video_path,
+                    mixed_audio_path=final_audio_path,
+                    output_video_path=str(dubbed_video_path)
+                )
+                status_messages.append(message)
 
-            # Create dubbed video
-            dubbed_video_path = Path("files") / f"dubbed_{Path(video_path).stem}.mp4"
-            success, message = create_dubbed_video(
-                original_video_path=video_path,
-                mixed_audio_path=final_audio_path,
-                output_video_path=str(dubbed_video_path)
-            )
-            status_messages.append(message)
+                if not success:
+                    return "\n".join(status_messages), None
 
-            if not success:
-                return "\n".join(status_messages), None
-
-            output_file = str(dubbed_video_path)
+                output_file = str(dubbed_video_path)
+                temp_files.append(output_file)
+            else:
+                # No TTS dubbing - use original video directly (no re-encoding)
+                status_messages.append("Używanie oryginalnego wideo (bez dubbingu)...")
+                output_file = video_path
 
             # === 9. Wypalanie napisów (opcjonalne) ===
             if burn_subtitles:
