@@ -183,6 +183,12 @@ def translate_with_llm(
             segment_offset=start_idx
         )
 
+        # Debug logging - controlled by LLM_DEBUG env var
+        if os.environ.get("LLM_DEBUG", "").lower() in ("1", "true", "yes"):
+            OutputManager.info(f"=== LLM Prompt (batch {batch_idx + 1}/{total_batches}) ===")
+            OutputManager.info(prompt)
+            OutputManager.info("=== End Prompt ===")
+
         # Call LLM API
         try:
             if config["api_format"] == "anthropic":
@@ -317,6 +323,12 @@ def _call_anthropic_api(prompt: str, config: dict) -> str:
     return response.content[0].text
 
 
+def _strip_speaker_markers(text: str) -> str:
+    """Usuń markery mówców z tekstu."""
+    # Usuwa [SPEAKER_00], [SPEAKER_01] itp.
+    return re.sub(r'\[SPEAKER_\d+\]\s*', '', text)
+
+
 def _parse_llm_response(
     response: str,
     original_segments: List[Tuple[int, int, str]],
@@ -355,6 +367,8 @@ def _parse_llm_response(
         if match:
             seg_idx = int(match.group(1))
             text = match.group(2).strip()
+            # Remove speaker markers from translated text
+            text = _strip_speaker_markers(text)
 
             if seg_idx in segment_timing:
                 start_ms, end_ms = segment_timing[seg_idx]
@@ -369,6 +383,8 @@ def _parse_llm_response(
             for i, line in enumerate(non_empty_lines):
                 # Remove any segment markers that might be present
                 text = re.sub(r'^\[SEG_\d+\]\s*', '', line)
+                # Remove speaker markers from translated text
+                text = _strip_speaker_markers(text)
                 start_ms, end_ms, _ = original_segments[i]
                 translated_segments.append((start_ms, end_ms, text))
 

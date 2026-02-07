@@ -192,12 +192,6 @@ def create_interface():
                         value=False
                     )
 
-                    hf_token = gr.Textbox(
-                        label="HuggingFace Token (wymagany dla diarization)",
-                        type="password",
-                        placeholder="hf_..."
-                    )
-
                 # Przycisk transkrypcji
                 transcribe_btn = gr.Button("Transkrybuj", variant="primary")
 
@@ -266,7 +260,6 @@ def create_interface():
                         timeout,
                         whisperx_align,
                         whisperx_diarize,
-                        hf_token,
                         use_llm_translate,
                         llm_provider,
                         llm_model,
@@ -313,6 +306,13 @@ def create_interface():
                 )
 
                 dubbing_srt_file_status = gr.HTML(value="")
+
+                # Info o opcjach transkrypcji (gdy nie używamy SRT)
+                transcription_options_info = gr.HTML(
+                    value='<div style="padding: 10px; background: #1a1a2e; border-radius: 5px; margin: 10px 0;">'
+                          '<b>Opcje auto-transkrypcji:</b> WhisperX / base | Tłumaczenie: wyłączone</div>',
+                    visible=True
+                )
 
                 # 3.2 Podstawowe opcje
                 gr.Markdown("### Opcje dubbingu")
@@ -476,6 +476,33 @@ def create_interface():
                         default = config.DEFAULT_COQUI_MODEL
                     return gr.update(choices=choices, value=default)
 
+                def update_transcription_options_info(
+                    use_srt, eng, mod, trans_enabled, use_llm, provider, llm_mod, gender_detect
+                ):
+                    """Update transcription options info panel for dubbing tab."""
+                    if use_srt:
+                        return gr.HTML(visible=False)
+
+                    parts = [f"<b>Opcje auto-transkrypcji:</b> {eng} / {mod}"]
+
+                    if trans_enabled:
+                        if use_llm:
+                            llm_info = f"LLM ({provider}"
+                            if llm_mod:
+                                llm_info += f" / {llm_mod}"
+                            llm_info += ")"
+                            if gender_detect:
+                                llm_info += " + wykrywanie płci"
+                            parts.append(f"Tłumaczenie: {llm_info}")
+                        else:
+                            parts.append("Tłumaczenie: Google Translator")
+                    else:
+                        parts.append("Tłumaczenie: wyłączone")
+
+                    html = '<div style="padding: 10px; background: #1a1a2e; border-radius: 5px; margin: 10px 0;">' + \
+                           " | ".join(parts) + '</div>'
+                    return gr.HTML(value=html, visible=True)
+
                 # Event handlers
                 dubbing_source_type.change(
                     fn=toggle_dubbing_source,
@@ -529,6 +556,19 @@ def create_interface():
                     outputs=[tts_voice]
                 )
 
+                # Update transcription options info when relevant settings change
+                transcription_info_inputs = [
+                    dubbing_use_srt, engine, model, enable_translation,
+                    use_llm_translate, llm_provider, llm_model, detect_gender
+                ]
+                for component in transcription_info_inputs:
+                    component.change(
+                        fn=update_transcription_options_info,
+                        inputs=transcription_info_inputs,
+                        outputs=[transcription_options_info],
+                        show_progress="hidden"
+                    )
+
                 # Handler dla przycisku dubbingu
                 dubbing_btn.click(
                     fn=handlers.handle_dubbing,
@@ -565,7 +605,13 @@ def create_interface():
                         timeout,
                         whisperx_align,
                         whisperx_diarize,
-                        hf_token
+                        # Parametry LLM z zakładki Transkrypcja
+                        use_llm_translate,
+                        llm_provider,
+                        llm_model,
+                        llm_base_url,
+                        llm_api_key,
+                        detect_gender
                     ],
                     outputs=[dubbing_status, dubbing_output]
                 )

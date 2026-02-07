@@ -139,5 +139,5 @@ DEFAULT_TTS_ENGINE = "edge"  # Domyslny silnik TTS
 DEFAULT_LANGUAGE = "pl"  # Domyslny jezyk
 DEFAULT_VOICE_EDGE = "pl-PL-MarekNeural"  # Domyslny glos Edge TTS
 DEFAULT_COQUI_MODEL = "tts_models/pl/mai_female/vits"  # Domyslny model Coqui
-DEFAULT_LLM_PROVIDER = "openai"  # Domyslny provider LLM
-DEFAULT_LLM_MODEL = "gpt-4o-mini"  # Domyslny model LLM
+DEFAULT_LLM_PROVIDER = "anthropic"  # Domyslny provider LLM
+DEFAULT_LLM_MODEL = ""  # Domyslny model LLM (pusty = auto)
