@@ -2,6 +2,33 @@
 
 Wszystkie ważne zmiany w projekcie będą dokumentowane w tym pliku.
 
+## [5.1.0] - 2026-02-07
+
+### Dodano
+- **Tłumaczenie LLM**: Nowy tryb tłumaczenia przez modele językowe (OpenAI, Anthropic, Ollama)
+  - Kontekstowe tłumaczenie całej transkrypcji zamiast segment po segmencie
+  - Wykrywanie płci mówców na podstawie analizy pitch głosu (librosa)
+  - Poprawna odmiana gramatyczna dla każdego mówcy (on/ona)
+  - Przetwarzanie w batchach dla długich transkrypcji
+  - Automatyczny fallback na Google Translator przy błędzie LLM
+- **Nowe moduły**:
+  - `data/llm_translator.py` - Tłumaczenie przez LLM z obsługą wielu providerów
+  - `data/speaker_analyzer.py` - Analiza płci mówców na podstawie pitch głosu
+- **Nowe argumenty CLI**:
+  - `--llm-translate` - Użyj LLM zamiast Google Translator
+  - `--llm-provider` - Provider LLM (openai, ollama, anthropic)
+  - `--llm-model` - Model LLM
+  - `--llm-base-url` - Custom base URL API
+  - `--llm-api-key` - Klucz API LLM
+  - `--detect-gender` - Wykryj płeć mówców dla odmiany gramatycznej
+- **Obsługa .env**: Automatyczne ładowanie zmiennych środowiskowych z pliku `.env` (python-dotenv)
+- **GUI**: Nowa sekcja "Tłumaczenie LLM (kontekstowe)" w zakładce Transkrypcja
+
+### Zmieniono
+- Rozszerzono `data/translation.py` o obsługę LLM z fallback na Google
+- Rozszerzono `data/transcription_engines.py` o wykrywanie płci mówców
+- Zaktualizowano `requirements.txt` i `requirements-windows.txt` o nowe zależności
+
 ## [5.0.3] - 2026-02-02
 
 ### Zmieniono

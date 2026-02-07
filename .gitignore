@@ -68,6 +68,11 @@ desktop.ini
 # Logs
 *.log
 
+# Environment files (secrets)
+.env
+.env.local
+.env.*.local
+
 # Downloaded content
 downloads/
 

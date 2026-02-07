@@ -4,6 +4,9 @@ GUI Application - Main Entry Point
 Gradio interface for the Transcription App
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import atexit
 import gradio as gr
 from data.gui import config
@@ -119,6 +122,45 @@ def create_interface():
                         label="Język docelowy"
                     )
 
+                # LLM Translation Options
+                with gr.Accordion("Tłumaczenie LLM (kontekstowe)", open=False, visible=False) as llm_accordion:
+                    gr.Markdown("*Tłumaczenie przez LLM z uwzględnieniem kontekstu i płci mówców*")
+
+                    use_llm_translate = gr.Checkbox(
+                        label="Użyj LLM zamiast Google Translator",
+                        value=False
+                    )
+
+                    detect_gender = gr.Checkbox(
+                        label="Wykryj płeć mówców (wymaga diaryzacji WhisperX)",
+                        value=False
+                    )
+
+                    with gr.Row():
+                        llm_provider = gr.Dropdown(
+                            choices=config.LLM_PROVIDERS,
+                            value=config.DEFAULT_LLM_PROVIDER,
+                            label="Provider LLM"
+                        )
+
+                        llm_model = gr.Textbox(
+                            label="Model LLM",
+                            value=config.DEFAULT_LLM_MODEL,
+                            placeholder="np. gpt-4o-mini, llama3.1, GLM-4.7"
+                        )
+
+                    with gr.Row():
+                        llm_base_url = gr.Textbox(
+                            label="Base URL (opcjonalnie)",
+                            placeholder="np. https://api.z.ai/api/anthropic"
+                        )
+
+                        llm_api_key = gr.Textbox(
+                            label="API Key",
+                            type="password",
+                            placeholder="lub ustaw LLM_API_KEY w środowisku"
+                        )
+
                 # 2.4 Zaawansowane ustawienia
                 with gr.Accordion("Zaawansowane ustawienia", open=False):
                     with gr.Row():
@@ -172,7 +214,7 @@ def create_interface():
                         return gr.update(visible=False), gr.update(visible=True)
 
                 def toggle_translation(enabled):
-                    return gr.update(visible=enabled)
+                    return gr.update(visible=enabled), gr.update(visible=enabled)
 
                 source_type.change(
                     fn=toggle_source,
@@ -198,7 +240,7 @@ def create_interface():
                 enable_translation.change(
                     fn=toggle_translation,
                     inputs=[enable_translation],
-                    outputs=[translation_row]
+                    outputs=[translation_row, llm_accordion]
                 )
 
                 # Handler dla przycisku transkrypcji
@@ -218,7 +260,13 @@ def create_interface():
                         timeout,
                         whisperx_align,
                         whisperx_diarize,
-                        hf_token
+                        hf_token,
+                        use_llm_translate,
+                        llm_provider,
+                        llm_model,
+                        llm_base_url,
+                        llm_api_key,
+                        detect_gender
                     ],
                     outputs=[transcription_status, transcription_output]
                 )
