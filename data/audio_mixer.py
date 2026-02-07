@@ -130,15 +130,23 @@ def create_dubbed_video(
         Tuple of (success: bool, message: str)
     """
     try:
+        print(f"Tworzenie wideo z dubbingiem...")
+        print(f"  Wideo źródłowe: {original_video_path}")
+        print(f"  Audio: {mixed_audio_path}")
+        print(f"  Wyjście: {output_video_path}")
+
         cmd = build_ffmpeg_video_merge_cmd(original_video_path, mixed_audio_path, output_video_path, audio_bitrate)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
 
         if result.returncode != 0:
+            print(f"FFmpeg error: {result.stderr}")
             return False, f"Błąd ffmpeg przy tworzeniu wideo z dubbingiem: {result.stderr}"
 
         if not Path(output_video_path).exists():
+            print(f"Plik nie istnieje po FFmpeg: {output_video_path}")
             return False, f"Błąd: Wideo z dubbingiem nie zostało utworzone: {output_video_path}"
 
+        print(f"Wideo utworzone pomyślnie: {output_video_path}")
         return True, f"Wideo z dubbingiem utworzone: {output_video_path}"
 
     except subprocess.TimeoutExpired:

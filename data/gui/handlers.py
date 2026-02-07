@@ -19,6 +19,10 @@ import tempfile
 import shutil
 import os
 
+# Absolute path to output files directory
+FILES_DIR = Path(__file__).parent.parent.parent / "files"
+FILES_DIR.mkdir(exist_ok=True)  # Ensure directory exists
+
 
 def cleanup_gradio_temp():
     """Clean up Gradio temporary upload files."""
@@ -48,7 +52,6 @@ def handle_transcription(
     timeout: int,
     whisperx_align: bool,
     whisperx_diarize: bool,
-    hf_token: str,
     use_llm_translate: bool = False,
     llm_provider: str = None,
     llm_model: str = None,
@@ -74,7 +77,6 @@ def handle_transcription(
         timeout: Timeout in seconds
         whisperx_align: Enable WhisperX alignment
         whisperx_diarize: Enable WhisperX diarization
-        hf_token: HuggingFace token for diarization
         use_llm_translate: Use LLM for translation instead of Google Translator
         llm_provider: LLM provider (openai, ollama, anthropic)
         llm_model: LLM model name
@@ -151,7 +153,24 @@ def handle_transcription(
         # === 2. Transkrypcja ===
         progress(0.2, desc="Transkrypcja audio...")
         status_messages.append("\n=== Transkrypcja ===")
-        status_messages.append(f"Model: {model}, Język: {language}, Silnik: {engine}")
+
+        # Build options summary
+        options_parts = [f"{engine}/{model}"]
+        if engine == "whisperx" and whisperx_align:
+            options_parts.append("align")
+        if engine == "whisperx" and whisperx_diarize:
+            options_parts.append("diarize")
+        if enable_translation:
+            trans_dir = f"{source_lang.upper()}→{target_lang.upper()}"
+            if use_llm_translate:
+                llm_info = f"LLM ({llm_provider or 'auto'})"
+                if detect_gender and whisperx_diarize:
+                    llm_info += " + gender"
+                options_parts.append(f"{trans_dir} via {llm_info}")
+            else:
+                options_parts.append(f"{trans_dir} via Google")
+
+        status_messages.append(f"Opcje: {' | '.join(options_parts)}")
 
         # Create a simple progress indicator (tqdm won't work in Gradio, but we keep the interface)
         pbar = None
@@ -168,7 +187,7 @@ def handle_transcription(
             timeout_seconds=int(timeout),
             whisperx_align=whisperx_align,
             whisperx_diarize=whisperx_diarize,
-            hf_token=hf_token if hf_token else None,
+            hf_token=os.environ.get("HF_TOKEN", "") or None,
             force_device=device,
             detect_gender=should_detect_gender
         )
@@ -228,7 +247,7 @@ def handle_transcription(
 
         # Generate output filename
         audio_stem = Path(audio_file_path).stem
-        output_srt = Path("files") / f"{audio_stem}.srt"
+        output_srt = FILES_DIR / f"{audio_stem}.srt"
         output_srt.parent.mkdir(parents=True, exist_ok=True)
 
         success, message = write_srt(final_segments, str(output_srt))
@@ -299,7 +318,13 @@ def handle_dubbing(
     transcribe_timeout: int,
     transcribe_whisperx_align: bool,
     transcribe_whisperx_diarize: bool,
-    transcribe_hf_token: str,
+    # Parametry LLM z zakładki Transkrypcja
+    transcribe_use_llm: bool = False,
+    transcribe_llm_provider: str = None,
+    transcribe_llm_model: str = None,
+    transcribe_llm_base_url: str = None,
+    transcribe_llm_api_key: str = None,
+    transcribe_detect_gender: bool = False,
     progress=gr.Progress()
 ) -> Tuple[str, Optional[str]]:
     """
@@ -337,7 +362,12 @@ def handle_dubbing(
         transcribe_timeout: Timeout for auto-transcription
         transcribe_whisperx_align: Enable WhisperX alignment for auto-transcription
         transcribe_whisperx_diarize: Enable WhisperX diarization for auto-transcription
-        transcribe_hf_token: HuggingFace token for diarization
+        transcribe_use_llm: Use LLM for translation instead of Google Translator
+        transcribe_llm_provider: LLM provider (openai, ollama, anthropic)
+        transcribe_llm_model: LLM model name
+        transcribe_llm_base_url: LLM API base URL
+        transcribe_llm_api_key: LLM API key
+        transcribe_detect_gender: Detect speaker gender for proper grammatical inflection
         progress: Gradio progress tracker
 
     Returns:
@@ -428,7 +458,24 @@ def handle_dubbing(
             # AUTO-TRANSKRYPCJA
             progress(0.15, desc="Automatyczna transkrypcja...")
             status_messages.append("\n=== Automatyczna transkrypcja ===")
-            status_messages.append(f"Model: {transcribe_model}, Język: {transcribe_language}")
+
+            # Build options summary
+            options_parts = [f"{transcribe_engine}/{transcribe_model}"]
+            if transcribe_engine == "whisperx" and transcribe_whisperx_align:
+                options_parts.append("align")
+            if transcribe_engine == "whisperx" and transcribe_whisperx_diarize:
+                options_parts.append("diarize")
+            if transcribe_enable_translation:
+                trans_dir = f"{transcribe_source_lang.upper()}→{transcribe_target_lang.upper()}"
+                if transcribe_use_llm:
+                    llm_info = f"LLM ({transcribe_llm_provider or 'auto'})"
+                    if transcribe_detect_gender and transcribe_whisperx_diarize:
+                        llm_info += " + gender"
+                    options_parts.append(f"{trans_dir} via {llm_info}")
+                else:
+                    options_parts.append(f"{trans_dir} via Google")
+
+            status_messages.append(f"Opcje: {' | '.join(options_parts)}")
 
             # Ekstrakcja audio z wideo
             status_messages.append("\n--- Ekstrakcja audio ---")
@@ -440,7 +487,11 @@ def handle_dubbing(
 
             # Transkrypcja
             progress(0.25, desc="Transkrypcja audio...")
-            success, message, segments = transcribe_chunk(
+
+            # Determine if we need gender detection
+            should_detect_gender = transcribe_detect_gender and transcribe_whisperx_diarize and transcribe_use_llm
+
+            result = transcribe_chunk(
                 wav_path=audio_path,
                 model_size=transcribe_model,
                 language=transcribe_language if transcribe_language != "auto" else None,
@@ -449,9 +500,20 @@ def handle_dubbing(
                 timeout_seconds=int(transcribe_timeout),
                 whisperx_align=transcribe_whisperx_align,
                 whisperx_diarize=transcribe_whisperx_diarize,
-                hf_token=transcribe_hf_token if transcribe_hf_token else None,
-                force_device=transcribe_device
+                hf_token=os.environ.get("HF_TOKEN", "") or None,
+                force_device=transcribe_device,
+                detect_gender=should_detect_gender
             )
+
+            # Handle different return formats based on detect_gender
+            if should_detect_gender:
+                success, message, segments, speaker_info = result
+                if speaker_info:
+                    status_messages.append(f"Wykryto {len(speaker_info)} mówców z informacją o płci")
+            else:
+                success, message, segments = result
+                speaker_info = {}
+
             status_messages.append(message)
             if not success or not segments:
                 return "\n".join(status_messages), None
@@ -460,10 +522,22 @@ def handle_dubbing(
             if transcribe_enable_translation:
                 progress(0.35, desc="Tłumaczenie...")
                 status_messages.append("\n--- Tłumaczenie ---")
+
+                if transcribe_use_llm:
+                    status_messages.append(f"Tryb: LLM ({transcribe_llm_provider or 'auto'} / {transcribe_llm_model or 'auto'})")
+                    if speaker_info:
+                        status_messages.append(f"Informacje o mówcach: {len(speaker_info)} osób")
+
                 success, message, segments, detected_lang = translate_segments(
                     segments=segments,
                     source_lang=transcribe_source_lang,
-                    target_lang=transcribe_target_lang
+                    target_lang=transcribe_target_lang,
+                    use_llm=transcribe_use_llm,
+                    speaker_info=speaker_info if transcribe_use_llm else None,
+                    llm_provider=transcribe_llm_provider,
+                    llm_model=transcribe_llm_model,
+                    llm_base_url=transcribe_llm_base_url,
+                    llm_api_key=transcribe_llm_api_key
                 )
                 status_messages.append(message)
                 if not success:
@@ -471,7 +545,7 @@ def handle_dubbing(
 
             # Zapis SRT do pliku tymczasowego
             status_messages.append("\n--- Zapis SRT ---")
-            temp_srt_path = Path("files") / f"auto_{Path(video_path).stem}.srt"
+            temp_srt_path = FILES_DIR / f"auto_{Path(video_path).stem}.srt"
             success, message = write_srt(segments, str(temp_srt_path))
             status_messages.append(message)
             if not success:
@@ -521,7 +595,7 @@ def handle_dubbing(
             status_messages.append("\n=== Generowanie TTS ===")
             status_messages.append(f"Silnik: {tts_engine}, Głos: {tts_voice}")
 
-            tts_output_dir = Path("files") / "tts_segments"
+            tts_output_dir = FILES_DIR / "tts_segments"
             tts_output_dir.mkdir(parents=True, exist_ok=True)
 
             # Determine coqui parameters
@@ -570,7 +644,7 @@ def handle_dubbing(
             adjusted_total_duration_ms = total_duration_ms + total_shift_ms
 
             # Combine TTS segments into single track
-            tts_combined_path = Path("files") / f"tts_combined_{Path(video_path).stem}.wav"
+            tts_combined_path = FILES_DIR / f"tts_combined_{Path(video_path).stem}.wav"
             success, message, tts_temp_files = create_tts_audio_track(
                 segment_timings,
                 adjusted_total_duration_ms,
@@ -597,7 +671,7 @@ def handle_dubbing(
             status_messages.append("\n=== Miksowanie audio ===")
 
             # Mix audio using the already extracted original audio
-            mixed_audio_path = Path("files") / f"mixed_audio_{Path(video_path).stem}.wav"
+            mixed_audio_path = FILES_DIR / f"mixed_audio_{Path(video_path).stem}.wav"
             success, message = mix_audio_tracks(
                 original_audio_path=original_audio_path,
                 tts_audio_path=tts_audio_path,
@@ -636,7 +710,7 @@ def handle_dubbing(
             if enable_tts_dubbing and tts_audio_path:
                 # TTS dubbing is enabled - create dubbed video with mixed audio
                 status_messages.append("Tworzenie wideo z dubbingiem...")
-                dubbed_video_path = Path("files") / f"dubbed_{Path(video_path).stem}.mp4"
+                dubbed_video_path = FILES_DIR / f"dubbed_{Path(video_path).stem}.mp4"
                 success, message = create_dubbed_video(
                     original_video_path=video_path,
                     mixed_audio_path=final_audio_path,
@@ -648,7 +722,7 @@ def handle_dubbing(
                     return "\n".join(status_messages), None
 
                 output_file = str(dubbed_video_path)
-                temp_files.append(output_file)
+                # temp_files.append(output_file)
             else:
                 # No TTS dubbing - use original video directly (no re-encoding)
                 status_messages.append("Używanie oryginalnego wideo (bez dubbingu)...")
@@ -666,7 +740,7 @@ def handle_dubbing(
                 if bilingual_subtitles and segments:
                     # For bilingual, we need both original and translated segments
                     # For now, use the same segments for both (would need translation in full pipeline)
-                    ass_path = Path("files") / f"{Path(video_path).stem}_bilingual.ass"
+                    ass_path = FILES_DIR / f"{Path(video_path).stem}_bilingual.ass"
                     success_ass, message_ass = write_dual_language_ass(
                         original_segments=segments,
                         translated_segments=segments,  # TODO: use actual translation
@@ -678,7 +752,7 @@ def handle_dubbing(
                         subtitle_to_burn = str(ass_path)
 
                 # Burn subtitles
-                burned_video_path = Path("files") / f"burned_{Path(video_path).stem}.mp4"
+                burned_video_path = FILES_DIR / f"burned_{Path(video_path).stem}.mp4"
                 success, message = burn_subtitles_to_video(
                     video_path=output_file,
                     subtitle_path=subtitle_to_burn,

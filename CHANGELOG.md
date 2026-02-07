@@ -2,6 +2,22 @@
 
 Wszystkie ważne zmiany w projekcie będą dokumentowane w tym pliku.
 
+## [5.1.1] - 2026-02-07
+
+### Naprawiono
+- Błąd z plikami wyjściowymi w Gradio (FileNotFoundError) - zamiana ścieżek względnych na absolutne
+
+### Zmieniono
+- Integracja tłumaczenia LLM z zakładką Dubbing (auto-transkrypcja używa teraz opcji LLM)
+- HuggingFace Token przeniesiony z GUI do pliku .env (HF_TOKEN)
+- Domyślny provider LLM zmieniony na Anthropic
+- Usuwanie markerów mówców ([SPEAKER_XX]) z tłumaczeń LLM
+- Panel informacyjny o opcjach transkrypcji w zakładce Dubbing
+
+### Dodano
+- Opcja LLM_DEBUG w .env do logowania promptów LLM
+- Logowanie diagnostyczne w tworzeniu wideo z dubbingiem
+
 ## [5.1.0] - 2026-02-07
 
 ### Dodano
