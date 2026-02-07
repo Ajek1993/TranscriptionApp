@@ -40,19 +40,48 @@ def build_ffmpeg_audio_extraction_cmd(
     input_path: str,
     output_path: str,
     sample_rate: int = 16000,
-    channels: int = 1
+    channels: int = 1,
+    high_quality: bool = False
 ) -> list:
-    """Build ffmpeg command to extract audio as WAV."""
-    return [
-        'ffmpeg',
-        '-i', str(input_path),
-        '-vn',  # No video
-        '-acodec', 'pcm_s16le',  # PCM 16-bit
-        '-ar', str(sample_rate),  # Sample rate
-        '-ac', str(channels),  # Channels
-        '-y',  # Overwrite output
-        str(output_path)
-    ]
+    """
+    Build ffmpeg command to extract audio as WAV.
+
+    Args:
+        input_path: Path to input video/audio file
+        output_path: Path to output WAV file
+        sample_rate: Sample rate in Hz (default: 16000 for transcription)
+        channels: Number of audio channels (default: 1 for mono)
+        high_quality: If True, extract in high quality (stereo, 48kHz, 24-bit)
+                     for final video output. If False, extract in low quality
+                     (mono, 16kHz, 16-bit) for Whisper transcription.
+
+    Returns:
+        List of command arguments for ffmpeg
+    """
+    if high_quality:
+        # High quality for final video output - preserve original quality
+        return [
+            'ffmpeg',
+            '-i', str(input_path),
+            '-vn',  # No video
+            '-acodec', 'pcm_s24le',  # PCM 24-bit
+            '-ar', '48000',  # 48kHz sample rate
+            '-ac', '2',  # Stereo
+            '-y',  # Overwrite output
+            str(output_path)
+        ]
+    else:
+        # Low quality for Whisper transcription - faster and sufficient
+        return [
+            'ffmpeg',
+            '-i', str(input_path),
+            '-vn',  # No video
+            '-acodec', 'pcm_s16le',  # PCM 16-bit
+            '-ar', str(sample_rate),  # Sample rate
+            '-ac', str(channels),  # Channels
+            '-y',  # Overwrite output
+            str(output_path)
+        ]
 
 
 def build_ffmpeg_audio_split_cmd(
@@ -78,9 +107,21 @@ def build_ffmpeg_audio_split_cmd(
 def build_ffmpeg_video_merge_cmd(
     video_path: str,
     audio_path: str,
-    output_path: str
+    output_path: str,
+    audio_bitrate: str = '320k'
 ) -> list:
-    """Build ffmpeg command to merge video with audio track."""
+    """
+    Build ffmpeg command to merge video with audio track.
+
+    Args:
+        video_path: Path to input video file
+        audio_path: Path to input audio file
+        output_path: Path to output video file
+        audio_bitrate: Audio bitrate for AAC encoding (default: 320k for high quality)
+
+    Returns:
+        List of command arguments for ffmpeg
+    """
     return [
         'ffmpeg', '-y',
         '-i', str(video_path),
@@ -89,7 +130,7 @@ def build_ffmpeg_video_merge_cmd(
         '-map', '1:a:0',
         '-c:v', 'copy',
         '-c:a', 'aac',
-        '-b:a', '192k',
+        '-b:a', audio_bitrate,
         '-shortest',
         str(output_path)
     ]
@@ -99,7 +140,8 @@ def build_ffmpeg_subtitle_burn_cmd(
     video_path: str,
     subtitle_path: str,
     output_path: str,
-    subtitle_style: str
+    subtitle_style: str,
+    audio_bitrate: str = '320k'
 ) -> list:
     """
     Build ffmpeg command to burn subtitles into video.
@@ -113,6 +155,7 @@ def build_ffmpeg_subtitle_burn_cmd(
         subtitle_path: Path to subtitle file (.srt or .ass)
         output_path: Path to output video file
         subtitle_style: ASS style string (only applied to SRT files)
+        audio_bitrate: Audio bitrate for AAC encoding (default: 320k)
 
     Returns:
         List of command arguments for ffmpeg
@@ -138,7 +181,8 @@ def build_ffmpeg_subtitle_burn_cmd(
         '-c:v', 'libx264',
         '-preset', 'medium',
         '-crf', '23',
-        '-c:a', 'copy',
+        '-c:a', 'aac',
+        '-b:a', audio_bitrate,
         str(output_path)
     ]
 

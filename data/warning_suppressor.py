@@ -2,11 +2,17 @@
 """
 Warning Suppressor Module
 
-Tłumienie ostrzeżeń z bibliotek zewnętrznych (yt-dlp, whisper, TTS, torch, tensorflow).
+Tłumienie ostrzeżeń z bibliotek zewnętrznych (yt-dlp, whisper, TTS, torch, tensorflow,
+pytorch_lightning, pyannote).
 Moduł ten centralnie zarządza konfiguracją tłumienia ostrzeżeń, aby zapewnić
 czyste wyjście dla użytkownika końcowego.
 
 Ostrzeżenia są domyślnie tłumione, ale mogą być ponownie włączone w trybie --debug.
+
+Obsługiwane ostrzeżenia:
+- Lightning checkpoint upgrade (PyTorch Lightning v1.5.4 → v2.6.0)
+- Pyannote TF32 warning (TensorFloat-32 dla reproducibility)
+- Standardowe ostrzeżenia bibliotek ML/DL
 """
 
 import os
@@ -20,9 +26,11 @@ def suppress_third_party_warnings(debug_mode: bool = False):
 
     Ta funkcja konfiguruje:
     - Python warnings filter (DeprecationWarning, FutureWarning, UserWarning)
+    - Specjalne filtry dla konkretnych ostrzeżeń (TF32, Lightning checkpoint)
     - Zmienne środowiskowe dla TensorFlow, HuggingFace, NumPy
     - Loggery dla bibliotek: yt-dlp, whisper, whisperx,
-      torch, tensorflow, transformers, TTS, numpy, scipy, numba, pyannote
+      torch, tensorflow, transformers, TTS, numpy, scipy, numba, pyannote,
+      pytorch_lightning, lightning
 
     Args:
         debug_mode: Jeśli True, ostrzeżenia NIE będą tłumione (dla debugowania)
@@ -93,6 +101,24 @@ def suppress_third_party_warnings(debug_mode: bool = False):
     # PyAnnote (speaker diarization dla WhisperX)
     logging.getLogger('pyannote').setLevel(logging.ERROR)
     logging.getLogger('pyannote.audio').setLevel(logging.ERROR)
+
+    # PyTorch Lightning (WhisperX dependency - checkpoint upgrade warnings)
+    logging.getLogger('pytorch_lightning').setLevel(logging.ERROR)
+    logging.getLogger('lightning').setLevel(logging.ERROR)
+
+    # ===== SPECJALNE FILTRY DLA KONKRETNYCH OSTRZEŻEŃ =====
+
+    # Pyannote TF32 warning (TensorFloat-32 dla reproducibility)
+    warnings.filterwarnings(
+        'ignore',
+        message='.*TensorFloat-32.*',
+        category=UserWarning
+    )
+    warnings.filterwarnings(
+        'ignore',
+        message='.*TF32.*',
+        category=UserWarning
+    )
 
     # ABSL (TensorFlow dependency)
     try:
