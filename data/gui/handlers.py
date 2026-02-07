@@ -49,6 +49,12 @@ def handle_transcription(
     whisperx_align: bool,
     whisperx_diarize: bool,
     hf_token: str,
+    use_llm_translate: bool = False,
+    llm_provider: str = None,
+    llm_model: str = None,
+    llm_base_url: str = None,
+    llm_api_key: str = None,
+    detect_gender: bool = False,
     progress=gr.Progress()
 ) -> Tuple[str, Optional[str]]:
     """
@@ -69,6 +75,12 @@ def handle_transcription(
         whisperx_align: Enable WhisperX alignment
         whisperx_diarize: Enable WhisperX diarization
         hf_token: HuggingFace token for diarization
+        use_llm_translate: Use LLM for translation instead of Google Translator
+        llm_provider: LLM provider (openai, ollama, anthropic)
+        llm_model: LLM model name
+        llm_base_url: LLM API base URL
+        llm_api_key: LLM API key
+        detect_gender: Detect speaker gender for proper grammatical inflection
         progress: Gradio progress tracker
 
     Returns:
@@ -144,7 +156,10 @@ def handle_transcription(
         # Create a simple progress indicator (tqdm won't work in Gradio, but we keep the interface)
         pbar = None
 
-        success, message, segments = transcribe_chunk(
+        # Determine if we need gender detection
+        should_detect_gender = detect_gender and whisperx_diarize
+
+        result = transcribe_chunk(
             wav_path=audio_file_path,
             model_size=model,
             language=language if language != "auto" else None,
@@ -154,8 +169,18 @@ def handle_transcription(
             whisperx_align=whisperx_align,
             whisperx_diarize=whisperx_diarize,
             hf_token=hf_token if hf_token else None,
-            force_device=device
+            force_device=device,
+            detect_gender=should_detect_gender
         )
+
+        # Handle different return formats based on detect_gender
+        if should_detect_gender:
+            success, message, segments, speaker_info = result
+            if speaker_info:
+                status_messages.append(f"Wykryto {len(speaker_info)} mówców z informacją o płci")
+        else:
+            success, message, segments = result
+            speaker_info = {}
 
         status_messages.append(message)
 
@@ -173,10 +198,21 @@ def handle_transcription(
             status_messages.append("\n=== Tłumaczenie ===")
             status_messages.append(f"Kierunek: {source_lang} -> {target_lang}")
 
+            if use_llm_translate:
+                status_messages.append(f"Tryb: LLM ({llm_provider or 'auto'} / {llm_model or 'auto'})")
+                if speaker_info:
+                    status_messages.append(f"Informacje o mówcach: {len(speaker_info)} osób")
+
             success, message, translated_segments, detected_lang = translate_segments(
                 segments=segments,
                 source_lang=source_lang,
-                target_lang=target_lang
+                target_lang=target_lang,
+                use_llm=use_llm_translate,
+                speaker_info=speaker_info if use_llm_translate else None,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
+                llm_base_url=llm_base_url,
+                llm_api_key=llm_api_key
             )
 
             status_messages.append(message)

@@ -13,6 +13,14 @@ edge-tts>=7.0.0
 openai-whisper>=20240930
 langdetect>=1.0.9
 gradio>=6.0.0
+librosa>=0.10.0
+
+# LLM Translation (optional)
+openai>=1.0.0
+anthropic>=0.40.0
+
+# Environment variable loading
+python-dotenv>=1.0.0
 
 # Coqui TTS - optional high-quality local TTS (requires GPU for best performance)
 TTS>=0.22.0

@@ -90,6 +90,20 @@ DEVICES = [
     "cpu"
 ]
 
+# Providery LLM
+LLM_PROVIDERS = [
+    "openai",
+    "ollama",
+    "anthropic"
+]
+
+# Domyslne modele LLM dla kazdego providera
+LLM_DEFAULT_MODELS = {
+    "openai": "gpt-4o-mini",
+    "ollama": "llama3.1",
+    "anthropic": "claude-sonnet-4-20250514"
+}
+
 # Jakosci wideo
 VIDEO_QUALITIES = [
     "2160",  # 4K
@@ -125,3 +139,5 @@ DEFAULT_TTS_ENGINE = "edge"  # Domyslny silnik TTS
 DEFAULT_LANGUAGE = "pl"  # Domyslny jezyk
 DEFAULT_VOICE_EDGE = "pl-PL-MarekNeural"  # Domyslny glos Edge TTS
 DEFAULT_COQUI_MODEL = "tts_models/pl/mai_female/vits"  # Domyslny model Coqui
+DEFAULT_LLM_PROVIDER = "openai"  # Domyslny provider LLM
+DEFAULT_LLM_MODEL = "gpt-4o-mini"  # Domyslny model LLM

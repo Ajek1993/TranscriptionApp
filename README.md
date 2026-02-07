@@ -24,7 +24,9 @@ Kod aplikacji został zorganizowany w modularną architekturę:
 - **device_manager.py** - Detekcja dostępności GPU/CPU, pamięć GPU
 - **transcription_engines.py** - Implementacja 2 silników transkrypcji (Whisper, WhisperX)
 - **segment_processor.py** - Dzielenie długich segmentów, wypełnianie luk, formatowanie timestampów SRT
-- **translation.py** - Tłumaczenie segmentów napisów (Google Translate via deep-translator)
+- **translation.py** - Tłumaczenie segmentów napisów (Google Translate via deep-translator, LLM)
+- **llm_translator.py** - Tłumaczenie przez LLM (OpenAI, Anthropic, Ollama) z kontekstem
+- **speaker_analyzer.py** - Analiza płci mówców na podstawie pitch głosu
 - **srt_writer.py** - Generowanie plików SRT ze standardowym formatowaniem
 - **ass_writer.py** - Generowanie plików ASS z dwujęzycznymi napisami (oryginał + tłumaczenie)
 - **tts_generator.py** - Generowanie dubbingu TTS (Edge TTS + Coqui TTS), synchronizacja audio
@@ -54,6 +56,7 @@ Wszystkie moduły są zorganizowane jako acykliczny graf zależności (DAG), co 
 - Automatyczny podział długich nagrań na fragmenty (~30 minut)
 - Transkrypcja z wykorzystaniem modelu Whisper (pl, en, i inne języki)
 - Tłumaczenie napisów: polski ↔ angielski (deep-translator + Google Translate)
+- Tłumaczenie LLM: kontekstowe tłumaczenie przez OpenAI/Anthropic/Ollama z wykrywaniem płci mówców
 - Zaawansowane opcje narratora: kontrola segmentów, wypełnianie luk, pauzy
 - Wsparcie dla GPU (CUDA) i CPU
 - Generowanie plików SRT i ASS zgodnych ze standardem
@@ -264,6 +267,17 @@ docker-compose run --rm transcribe --local /data/film.mp4 --language pl --transl
 
 # Natywnie
 python transcribe.py --local "film.mp4" --language pl --translate pl-en
+```
+
+**Tłumaczenie LLM (kontekstowe, z wykrywaniem płci):**
+```bash
+# Wymaga ustawienia LLM_API_KEY w pliku .env lub parametrem
+python transcribe.py "URL" --language en --translate en-pl \
+  --llm-translate --llm-provider openai --llm-model gpt-4o-mini
+
+# Z wykrywaniem płci mówców (wymaga diaryzacji)
+python transcribe.py "URL" --language en --translate en-pl \
+  --llm-translate --detect-gender --whisperx-diarize --hf-token YOUR_TOKEN
 ```
 
 ### 4. Dubbing TTS (Polish Voice-Over)

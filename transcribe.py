@@ -28,6 +28,10 @@ if not debug_mode:
 from data.warning_suppressor import suppress_third_party_warnings
 suppress_third_party_warnings(debug_mode=debug_mode)
 
+# ===== ŁADOWANIE .env =====
+from dotenv import load_dotenv
+load_dotenv()
+
 # ===== STANDARDOWE IMPORTY =====
 import re
 import subprocess
@@ -395,15 +399,19 @@ def burn_subtitles_to_video_pipeline(original_video_path: str, srt_filename: str
 
 # ===== TRANSCRIPTION PIPELINE =====
 
-def _transcribe_all_chunks(chunk_paths: List[str], args, force_device: str = 'auto') -> Tuple[bool, str, List[Tuple[int, int, str]]]:
+def _transcribe_all_chunks(chunk_paths: List[str], args, force_device: str = 'auto'):
     """
     Transcribe all chunks with progress tracking.
 
     Returns:
-        Tuple of (success, error_msg, all_segments)
+        Tuple of (success, error_msg, all_segments, speaker_info)
+        speaker_info is dict with gender detection results (if enabled)
     """
     all_segments = []
+    all_speaker_info = {}
     current_offset_ms = 0
+
+    detect_gender = getattr(args, 'detect_gender', False)
 
     # Create overall progress bar for chunks
     with tqdm(total=len(chunk_paths), desc="Overall Progress", unit="chunk", position=0) as chunk_pbar:
@@ -424,7 +432,7 @@ def _transcribe_all_chunks(chunk_paths: List[str], args, force_device: str = 'au
             )
 
             # Transcribe with progress callback
-            success, message, segments = transcribe_chunk(
+            result = transcribe_chunk(
                 chunk_path,
                 model_size=args.model,
                 language=args.language,
@@ -437,14 +445,22 @@ def _transcribe_all_chunks(chunk_paths: List[str], args, force_device: str = 'au
                 whisperx_min_speakers=getattr(args, 'whisperx_min_speakers', None),
                 whisperx_max_speakers=getattr(args, 'whisperx_max_speakers', None),
                 hf_token=getattr(args, 'hf_token', None),
-                force_device=force_device
+                force_device=force_device,
+                detect_gender=detect_gender
             )
+
+            # Handle different return formats based on detect_gender
+            if detect_gender:
+                success, message, segments, speaker_info = result
+                all_speaker_info.update(speaker_info)
+            else:
+                success, message, segments = result
 
             # Close segment progress bar
             segment_pbar.close()
 
             if not success:
-                return False, message, []
+                return False, message, [], {}
 
             # Split long segments for better dubbing sync
             if args.dub or args.dub_audio_only:
@@ -487,16 +503,21 @@ def _transcribe_all_chunks(chunk_paths: List[str], args, force_device: str = 'au
             chunk_pbar.set_postfix_str(f"{len(segments)} segments, total: {len(all_segments)}")
             chunk_pbar.update(1)
 
-    return True, "", all_segments
+    return True, "", all_segments, all_speaker_info
 
 
-def _translate_segments_if_requested(segments: List[Tuple[int, int, str]], args) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
+def _translate_segments_if_requested(
+    segments: List[Tuple[int, int, str]],
+    args,
+    speaker_info: dict = None
+) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
     """
     Handle translation step if requested.
 
     Supports:
     - auto-XX: Auto-detect source language, translate to XX
     - XX-YY: Translate from XX to YY
+    - LLM translation with speaker gender awareness
 
     Returns:
         Tuple of (success, error_msg, segments)
@@ -515,10 +536,23 @@ def _translate_segments_if_requested(segments: List[Tuple[int, int, str]], args)
     if src_lang != 'auto' and args.language and args.language != src_lang:
         print(f"Ostrzeżenie: Język transkrypcji ({args.language}) różni się od źródłowego języka tłumaczenia ({src_lang})")
 
+    # Determine if LLM translation should be used
+    use_llm = getattr(args, 'llm_translate', False)
+    if use_llm:
+        print("Tryb tłumaczenia: LLM (kontekstowe)")
+        if speaker_info:
+            print(f"  Informacje o mówcach: {len(speaker_info)} osób")
+
     success, message, translated_segments, detected_lang = translate_segments(
         segments,
         source_lang=src_lang,
-        target_lang=tgt_lang
+        target_lang=tgt_lang,
+        use_llm=use_llm,
+        speaker_info=speaker_info,
+        llm_provider=getattr(args, 'llm_provider', None),
+        llm_model=getattr(args, 'llm_model', None),
+        llm_base_url=getattr(args, 'llm_base_url', None),
+        llm_api_key=getattr(args, 'llm_api_key', None)
     )
 
     if not success:
@@ -557,15 +591,21 @@ def run_transcription_pipeline(audio_path: str, args, temp_dir: str) -> Tuple[bo
         return False, "ONLY_CHUNK_MODE", [], []
 
     # Stage 3: Transcribe all chunks
-    success, message, all_segments = _transcribe_all_chunks(chunk_paths, args, force_device=args.device)
+    success, message, all_segments, speaker_info = _transcribe_all_chunks(chunk_paths, args, force_device=args.device)
     if not success:
         return False, message, [], []
+
+    # Log speaker info if gender detection was enabled
+    if speaker_info:
+        print(f"Wykryto {len(speaker_info)} mówców z informacją o płci")
 
     # Preserve original segments for dual-language mode
     original_segments = all_segments.copy() if args.dual_language else []
 
-    # Translation step (if requested)
-    success, message, translated_segments = _translate_segments_if_requested(all_segments, args)
+    # Translation step (if requested) - pass speaker_info for LLM translation
+    success, message, translated_segments = _translate_segments_if_requested(
+        all_segments, args, speaker_info=speaker_info
+    )
     if not success:
         return False, message, [], []
 
@@ -927,6 +967,22 @@ def main():
     transcription_group.add_argument('-t', '--translate', type=str,
                        help='Tłumaczenie: auto-XX (autodetekcja→XX) lub XX-YY (np. pl-en, en-pl). '
                             'Przykłady: --translate auto-pl, --translate auto-en, --translate pl-en')
+
+    # ===== OPCJE TŁUMACZENIA LLM =====
+    llm_group = parser.add_argument_group('Opcje tłumaczenia LLM', 'Tłumaczenie kontekstowe przez modele językowe')
+    llm_group.add_argument('--llm-translate', action='store_true',
+                       help='Użyj LLM zamiast Google Translator (wymaga API key)')
+    llm_group.add_argument('--llm-provider', type=str, default=None,
+                       choices=['openai', 'ollama', 'anthropic'],
+                       help='Provider LLM: openai (GPT), ollama (lokalny), anthropic (Claude/GLM)')
+    llm_group.add_argument('--llm-model', type=str, default=None,
+                       help='Model LLM (np. gpt-4o-mini, llama3.1, GLM-4.7, claude-sonnet-4-20250514)')
+    llm_group.add_argument('--llm-base-url', type=str, default=None,
+                       help='Custom base URL API (np. https://api.z.ai/api/anthropic)')
+    llm_group.add_argument('--llm-api-key', type=str, default=None,
+                       help='Klucz API LLM (alternatywnie: zmienna LLM_API_KEY)')
+    llm_group.add_argument('--detect-gender', action='store_true',
+                       help='Wykryj płeć mówców dla poprawnej odmiany gramatycznej (wymaga diaryzacji)')
 
     # ===== OPCJE WHISPERX =====
     whisperx_group = parser.add_argument_group('Opcje WhisperX', 'Zaawansowane funkcje dla silnika WhisperX')

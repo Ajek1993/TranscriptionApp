@@ -8,12 +8,15 @@ This module provides different transcription engines for audio files:
 
 All engines return transcription segments in the format:
 List[Tuple[int, int, str]] - (start_ms, end_ms, text)
+
+Optional speaker_info dict with gender detection:
+{"SPEAKER_00": {"gender": "male", "pitch_mean": 120.5, "confidence": 0.85}}
 """
 
 import threading
 import time
 from pathlib import Path
-from typing import Tuple, List
+from typing import Tuple, List, Dict, Optional, Union
 from tqdm import tqdm
 
 from .device_manager import detect_device, check_vram_for_model, clear_cuda_cache
@@ -178,8 +181,9 @@ def transcribe_with_whisperx(
     min_speakers: int = None,
     max_speakers: int = None,
     hf_token: str = None,
-    force_device: str = 'auto'
-) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
+    force_device: str = 'auto',
+    detect_gender: bool = False
+) -> Union[Tuple[bool, str, List[Tuple[int, int, str]]], Tuple[bool, str, List[Tuple[int, int, str]], Dict[str, dict]]]:
     """
     Transkrypcja z WhisperX (GPU/CPU, alignment, diarization).
 
@@ -312,6 +316,18 @@ def transcribe_with_whisperx(
     # Zwolnij pamięć GPU po transkrypcji
     clear_cuda_cache()
 
+    # Wykrywanie płci mówców (opcjonalnie)
+    speaker_info = {}
+    if detect_gender and diarize:
+        try:
+            from .speaker_analyzer import analyze_speaker_gender
+            tqdm.write("Analiza płci mówców...")
+            speaker_info = analyze_speaker_gender(str(wav_path), segments)
+        except Exception as e:
+            tqdm.write(f"Ostrzeżenie: Analiza płci nie powiodła się: {e}")
+
+    if detect_gender:
+        return True, f"Transkrypcja zakończona: {len(segments)} segmentów", segments, speaker_info
     return True, f"Transkrypcja zakończona: {len(segments)} segmentów", segments
 
 
@@ -328,8 +344,9 @@ def transcribe_chunk(
     whisperx_min_speakers: int = None,
     whisperx_max_speakers: int = None,
     hf_token: str = None,
-    force_device: str = 'auto'
-) -> Tuple[bool, str, List[Tuple[int, int, str]]]:
+    force_device: str = 'auto',
+    detect_gender: bool = False
+) -> Union[Tuple[bool, str, List[Tuple[int, int, str]]], Tuple[bool, str, List[Tuple[int, int, str]], Dict[str, dict]]]:
     """
     Transkrypcja pliku WAV przy użyciu wybranego silnika.
 
@@ -346,9 +363,11 @@ def transcribe_chunk(
         whisperx_max_speakers: Max liczba mówców (tylko WhisperX)
         hf_token: HuggingFace token (tylko WhisperX diarization)
         force_device: Device override ('auto', 'cuda', 'cpu')
+        detect_gender: Włącz wykrywanie płci mówców (tylko WhisperX z diarization)
 
     Returns:
         Tuple (success: bool, message: str, segments: List[(start_ms, end_ms, text)])
+        With detect_gender=True: adds speaker_info dict as 4th element
     """
     try:
         # Sprawdź czy plik istnieje
@@ -358,11 +377,15 @@ def transcribe_chunk(
 
         # Wybór silnika transkrypcji
         if engine == "whisper":
-            return transcribe_with_whisper(
+            result = transcribe_with_whisper(
                 wav_path, model_size, language,
                 segment_progress_bar, timeout_seconds,
                 force_device=force_device
             )
+            # Whisper doesn't support diarization, so no gender detection
+            if detect_gender:
+                return result[0], result[1], result[2], {}
+            return result
 
         elif engine == "whisperx":
             return transcribe_with_whisperx(
@@ -373,13 +396,20 @@ def transcribe_chunk(
                 min_speakers=whisperx_min_speakers,
                 max_speakers=whisperx_max_speakers,
                 hf_token=hf_token,
-                force_device=force_device
+                force_device=force_device,
+                detect_gender=detect_gender
             )
 
         else:
+            if detect_gender:
+                return False, f"Błąd: Nieobsługiwany silnik transkrypcji: {engine}", [], {}
             return False, f"Błąd: Nieobsługiwany silnik transkrypcji: {engine}", []
 
     except ImportError as e:
+        if detect_gender:
+            return False, f"Błąd: Brak wymaganej biblioteki: {str(e)}", [], {}
         return False, f"Błąd: Brak wymaganej biblioteki: {str(e)}", []
     except Exception as e:
+        if detect_gender:
+            return False, f"Błąd podczas transkrypcji: {str(e)}", [], {}
         return False, f"Błąd podczas transkrypcji: {str(e)}", []
