@@ -307,6 +307,12 @@ def create_interface():
 
                 dubbing_srt_file_status = gr.HTML(value="")
 
+                dubbing_correct_srt = gr.Checkbox(
+                    label="Korekta SRT przez LLM (przed dubbingiem)",
+                    value=False,
+                    visible=False
+                )
+
                 # Info o opcjach transkrypcji (gdy nie używamy SRT)
                 transcription_options_info = gr.HTML(
                     value='<div style="padding: 10px; background: #1a1a2e; border-radius: 5px; margin: 10px 0;">'
@@ -458,7 +464,11 @@ def create_interface():
                         )
 
                 def toggle_dubbing_srt(checkbox_value):
-                    return gr.update(visible=checkbox_value)  # pokazuje/ukrywa dubbing_srt_file
+                    # Pokazuje/ukrywa dubbing_srt_file i dubbing_correct_srt
+                    return (
+                        gr.update(visible=checkbox_value),  # dubbing_srt_file
+                        gr.update(visible=checkbox_value)   # dubbing_correct_srt
+                    )
 
                 def toggle_tts_settings(enabled):
                     return gr.update(visible=enabled)
@@ -513,7 +523,7 @@ def create_interface():
                 dubbing_use_srt.change(
                     fn=toggle_dubbing_srt,
                     inputs=[dubbing_use_srt],
-                    outputs=[dubbing_srt_file]
+                    outputs=[dubbing_srt_file, dubbing_correct_srt]
                 )
 
                 # Real-time validation with debounce
@@ -611,9 +621,92 @@ def create_interface():
                         llm_model,
                         llm_base_url,
                         llm_api_key,
-                        detect_gender
+                        detect_gender,
+                        # Korekta SRT
+                        dubbing_correct_srt
                     ],
                     outputs=[dubbing_status, dubbing_output]
+                )
+
+            with gr.Tab("Korekta SRT"):
+                # Zakładka standalone korekty SRT przez LLM
+                gr.Markdown("### Korekta literówek i błędów w plikach SRT")
+                gr.Markdown("*Poprawia błędy OCR, literówki i błędy gramatyczne przy użyciu LLM*")
+
+                # Upload pliku SRT
+                correction_srt_file = gr.File(
+                    label="Plik SRT do korekty",
+                    file_types=[".srt"]
+                )
+
+                correction_srt_status = gr.HTML(value="")
+
+                # Ustawienia LLM
+                gr.Markdown("### Ustawienia LLM")
+
+                with gr.Row():
+                    correction_llm_provider = gr.Dropdown(
+                        choices=config.LLM_PROVIDERS,
+                        value=config.DEFAULT_LLM_PROVIDER,
+                        label="Provider LLM"
+                    )
+
+                    correction_llm_model = gr.Textbox(
+                        label="Model LLM",
+                        value=config.DEFAULT_LLM_MODEL,
+                        placeholder="np. gpt-4o-mini, llama3.1"
+                    )
+
+                with gr.Row():
+                    correction_llm_base_url = gr.Textbox(
+                        label="Base URL (opcjonalnie)",
+                        placeholder="np. https://api.z.ai/api/anthropic"
+                    )
+
+                    correction_llm_api_key = gr.Textbox(
+                        label="API Key",
+                        type="password",
+                        placeholder="lub ustaw LLM_API_KEY w środowisku"
+                    )
+
+                # Przycisk korekty
+                correction_btn = gr.Button("Popraw napisy", variant="primary")
+
+                # Output
+                correction_status = gr.Textbox(
+                    label="Status",
+                    lines=10,
+                    interactive=False
+                )
+
+                with gr.Row():
+                    correction_output_srt = gr.File(
+                        label="Pobierz poprawiony SRT"
+                    )
+
+                    correction_output_log = gr.File(
+                        label="Pobierz log zmian"
+                    )
+
+                # Walidacja pliku SRT
+                correction_srt_file.change(
+                    fn=validate_srt_upload,
+                    inputs=[correction_srt_file],
+                    outputs=[correction_srt_status],
+                    show_progress="hidden"
+                )
+
+                # Handler dla przycisku korekty
+                correction_btn.click(
+                    fn=handlers.handle_srt_correction,
+                    inputs=[
+                        correction_srt_file,
+                        correction_llm_provider,
+                        correction_llm_model,
+                        correction_llm_base_url,
+                        correction_llm_api_key
+                    ],
+                    outputs=[correction_status, correction_output_srt, correction_output_log]
                 )
 
             with gr.Tab("Pobieranie"):

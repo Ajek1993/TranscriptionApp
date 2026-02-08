@@ -2,6 +2,18 @@
 
 Wszystkie ważne zmiany w projekcie będą dokumentowane w tym pliku.
 
+## [5.2.0] - 2026-02-08
+
+### Dodano
+- **Korekta SRT przez LLM**: Nowy moduł `data/srt_corrector.py` do naprawy literówek i błędów OCR
+  - Automatyczne filtrowanie credits/metadanych z napisów
+  - Usuwanie nazwisk aktorów (all-caps) z początku/końca segmentów
+  - Wykrywanie napisów końcowych (end credits) z rolami filmowymi
+  - Usuwanie łączników credits ("and", "&")
+  - Korekta błędów OCR przez LLM (wielkie litery w środku słów)
+- **Nowa zakładka "Korekta SRT"** w GUI do standalone korekty plików SRT
+- **Opcja korekty SRT przed dubbingiem** - checkbox w zakładce Dubbing (widoczny przy użyciu własnego SRT)
+
 ## [5.1.1] - 2026-02-07
 
 ### Naprawiono
