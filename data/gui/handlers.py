@@ -325,6 +325,8 @@ def handle_dubbing(
     transcribe_llm_base_url: str = None,
     transcribe_llm_api_key: str = None,
     transcribe_detect_gender: bool = False,
+    # Korekta SRT przed dubbingiem
+    correct_srt: bool = False,
     progress=gr.Progress()
 ) -> Tuple[str, Optional[str]]:
     """
@@ -368,6 +370,7 @@ def handle_dubbing(
         transcribe_llm_base_url: LLM API base URL
         transcribe_llm_api_key: LLM API key
         transcribe_detect_gender: Detect speaker gender for proper grammatical inflection
+        correct_srt: Whether to run LLM correction on SRT before dubbing
         progress: Gradio progress tracker
 
     Returns:
@@ -380,6 +383,7 @@ def handle_dubbing(
     from ..segment_processor import merge_segments_for_narrator
     from ..ass_writer import write_dual_language_ass
     from ..audio_processor import get_audio_duration_ms
+    from ..srt_corrector import correct_srt_with_llm, write_corrections_log
 
     status_messages = []
     temp_files = []
@@ -454,6 +458,39 @@ def handle_dubbing(
             status_messages.append(message)
             if not success:
                 return "\n".join(status_messages), None
+
+            # Korekta SRT przez LLM (opcjonalna)
+            if correct_srt:
+                progress(0.17, desc="Korekta SRT przez LLM...")
+                status_messages.append("\n=== Korekta SRT przez LLM ===")
+
+                success, message, corrected_segments, changes = correct_srt_with_llm(
+                    segments=segments,
+                    provider=transcribe_llm_provider,
+                    model=transcribe_llm_model,
+                    base_url=transcribe_llm_base_url,
+                    api_key=transcribe_llm_api_key
+                )
+                status_messages.append(message)
+
+                if success:
+                    segments = corrected_segments
+                    status_messages.append(f"Liczba poprawek: {len(changes)}")
+
+                    # Zapisz log zmian
+                    if changes:
+                        srt_filename = Path(srt_path).stem
+                        corrections_log_path = FILES_DIR / f"{srt_filename}_corrections.txt"
+                        write_corrections_log(
+                            changes=changes,
+                            source_filename=Path(srt_path).name,
+                            output_path=str(corrections_log_path),
+                            provider=transcribe_llm_provider,
+                            model=transcribe_llm_model
+                        )
+                        status_messages.append(f"Log zmian: {corrections_log_path}")
+                else:
+                    status_messages.append("Ostrzeżenie: Korekta nieudana, kontynuuję z oryginalnym SRT")
         else:
             # AUTO-TRANSKRYPCJA
             progress(0.15, desc="Automatyczna transkrypcja...")
@@ -879,3 +916,122 @@ def handle_download(
     finally:
         # Clear CUDA cache after operation
         clear_cuda_cache()
+
+
+def handle_srt_correction(
+    srt_file,
+    llm_provider: str,
+    llm_model: str,
+    llm_base_url: str,
+    llm_api_key: str,
+    progress=gr.Progress()
+) -> Tuple[str, Optional[str], Optional[str]]:
+    """
+    Handler for SRT correction tab.
+
+    Args:
+        srt_file: Uploaded SRT file object
+        llm_provider: LLM provider (openai, ollama, anthropic)
+        llm_model: LLM model name
+        llm_base_url: LLM API base URL
+        llm_api_key: LLM API key
+        progress: Gradio progress tracker
+
+    Returns:
+        Tuple (status_text, corrected_srt_path, corrections_log_path)
+    """
+    from ..srt_reader import parse_srt_file
+    from ..srt_writer import write_srt
+    from ..srt_corrector import correct_srt_with_llm, write_corrections_log
+    from ..llm_translator import get_llm_config
+
+    status_messages = []
+
+    try:
+        # === 1. Walidacja pliku SRT ===
+        progress(0, desc="Walidacja pliku SRT...")
+        status_messages.append("=== Walidacja pliku SRT ===")
+
+        if srt_file is None:
+            return "Błąd: Proszę wybrać plik SRT.", None, None
+
+        srt_path = srt_file.name if hasattr(srt_file, 'name') else str(srt_file)
+        srt_filename = Path(srt_path).name
+        status_messages.append(f"Plik: {srt_filename}")
+
+        # === 2. Parsowanie pliku SRT ===
+        progress(0.1, desc="Wczytywanie pliku SRT...")
+        status_messages.append("\n=== Wczytywanie pliku SRT ===")
+
+        success, message, segments = parse_srt_file(srt_path)
+        status_messages.append(message)
+
+        if not success:
+            return "\n".join(status_messages), None, None
+
+        status_messages.append(f"Liczba segmentów: {len(segments)}")
+
+        # === 3. Korekta przez LLM ===
+        progress(0.2, desc="Korekta tekstu przez LLM...")
+        status_messages.append("\n=== Korekta przez LLM ===")
+
+        config = get_llm_config(llm_provider, llm_model, llm_base_url, llm_api_key)
+        status_messages.append(f"Provider: {config['provider']} / {config['model']}")
+
+        success, message, corrected_segments, changes = correct_srt_with_llm(
+            segments=segments,
+            provider=llm_provider,
+            model=llm_model,
+            base_url=llm_base_url,
+            api_key=llm_api_key
+        )
+
+        status_messages.append(message)
+
+        if not success:
+            return "\n".join(status_messages), None, None
+
+        # === 4. Zapis poprawionego pliku SRT ===
+        progress(0.8, desc="Zapisywanie plików...")
+        status_messages.append("\n=== Zapisywanie plików ===")
+
+        # Generate output filenames
+        srt_stem = Path(srt_path).stem
+        corrected_srt_path = FILES_DIR / f"{srt_stem}_corrected.srt"
+        corrections_log_path = FILES_DIR / f"{srt_stem}_corrections.txt"
+
+        # Write corrected SRT
+        success, message = write_srt(corrected_segments, str(corrected_srt_path))
+        status_messages.append(message)
+
+        if not success:
+            return "\n".join(status_messages), None, None
+
+        # Write corrections log
+        success, message = write_corrections_log(
+            changes=changes,
+            source_filename=srt_filename,
+            output_path=str(corrections_log_path),
+            provider=config['provider'],
+            model=config['model']
+        )
+        status_messages.append(message)
+
+        # === 5. Sukces ===
+        progress(1.0, desc="Gotowe!")
+        status_messages.append("\n=== ✓ Korekta zakończona pomyślnie ===")
+        status_messages.append(f"Liczba zmian: {len(changes)}")
+        status_messages.append(f"Poprawiony SRT: {corrected_srt_path}")
+        status_messages.append(f"Log zmian: {corrections_log_path}")
+
+        return "\n".join(status_messages), str(corrected_srt_path), str(corrections_log_path)
+
+    except Exception as e:
+        error_msg = f"\n\n!!! BŁĄD !!!\n{str(e)}"
+        import traceback
+        error_msg += f"\n{traceback.format_exc()}"
+        status_messages.append(error_msg)
+        return "\n".join(status_messages), None, None
+    finally:
+        # Clean up Gradio temp files
+        cleanup_gradio_temp()
