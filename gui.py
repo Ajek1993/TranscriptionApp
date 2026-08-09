@@ -18,9 +18,39 @@ import gradio as gr
 from data.gui import config
 from data.gui import handlers
 from data.validators import validate_youtube_url_with_message, validate_file_extension, validate_srt_file
+from data.audio_processor import list_audio_streams, format_audio_stream
 
 
 # === Validation helpers for real-time feedback ===
+
+def refresh_audio_tracks(file_obj) -> gr.Dropdown:
+    """
+    Populate the audio-track picker from an uploaded file.
+
+    Only shown for multi-track files - movie rips often bundle the original
+    audio with dubbed/voiceover versions, and transcribing the wrong one
+    produces subtitles that neither match the dialogue nor its timing.
+    """
+    hidden = gr.update(choices=[("Automatycznie", "auto")], value="auto", visible=False)
+
+    if file_obj is None:
+        return hidden
+
+    file_path = file_obj.name if hasattr(file_obj, 'name') else str(file_obj)
+    streams = list_audio_streams(file_path)
+
+    if len(streams) <= 1:
+        return hidden
+
+    choices = [("Automatycznie (oryginał / zgodna z językiem źródłowym)", "auto")]
+    choices += [(format_audio_stream(s), str(s["track"])) for s in streams]
+
+    return gr.update(
+        choices=choices,
+        value="auto",
+        visible=True,
+        label=f"Ścieżka audio — plik ma {len(streams)} ścieżek (uwaga na dubbing/lektora)"
+    )
 
 def validate_youtube_url_realtime(url: str) -> gr.HTML:
     """Validate YouTube URL in real-time and return status HTML."""
@@ -82,6 +112,13 @@ def create_interface():
                 )
 
                 local_file_status = gr.HTML(value="")
+
+                audio_track = gr.Dropdown(
+                    choices=[("Automatycznie", "auto")],
+                    value="auto",
+                    label="Ścieżka audio",
+                    visible=False
+                )
 
                 # 2.2 Podstawowe ustawienia
                 gr.Markdown("### Ustawienia transkrypcji")
@@ -237,6 +274,13 @@ def create_interface():
                     show_progress="hidden"
                 )
 
+                local_file.change(
+                    fn=refresh_audio_tracks,
+                    inputs=[local_file],
+                    outputs=[audio_track],
+                    show_progress="hidden"
+                )
+
                 enable_translation.change(
                     fn=toggle_translation,
                     inputs=[enable_translation],
@@ -265,7 +309,8 @@ def create_interface():
                         llm_model,
                         llm_base_url,
                         llm_api_key,
-                        detect_gender
+                        detect_gender,
+                        audio_track
                     ],
                     outputs=[transcription_status, transcription_output]
                 )
@@ -293,6 +338,13 @@ def create_interface():
                 )
 
                 dubbing_video_file_status = gr.HTML(value="")
+
+                dubbing_audio_track = gr.Dropdown(
+                    choices=[("Automatycznie", "auto")],
+                    value="auto",
+                    label="Ścieżka audio",
+                    visible=False
+                )
 
                 dubbing_use_srt = gr.Checkbox(
                     label="Użyj pliku SRT (gdy odznaczone - auto-transkrypcja)",
@@ -541,6 +593,13 @@ def create_interface():
                     show_progress="hidden"
                 )
 
+                dubbing_video_file.change(
+                    fn=refresh_audio_tracks,
+                    inputs=[dubbing_video_file],
+                    outputs=[dubbing_audio_track],
+                    show_progress="hidden"
+                )
+
                 dubbing_srt_file.change(
                     fn=validate_srt_upload,
                     inputs=[dubbing_srt_file],
@@ -623,7 +682,9 @@ def create_interface():
                         llm_api_key,
                         detect_gender,
                         # Korekta SRT
-                        dubbing_correct_srt
+                        dubbing_correct_srt,
+                        # Wybór ścieżki audio (pliki wielościeżkowe)
+                        dubbing_audio_track
                     ],
                     outputs=[dubbing_status, dubbing_output]
                 )

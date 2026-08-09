@@ -18,6 +18,11 @@ from .command_builders import (
     build_ffmpeg_audio_extraction_cmd
 )
 from .output_manager import OutputManager
+from .audio_processor import (
+    list_audio_streams,
+    format_audio_stream,
+    select_audio_stream
+)
 
 def get_video_title(url: str) -> str:
     """Pobiera tytuł wideo z YouTube bez pobierania."""
@@ -39,13 +44,44 @@ def get_video_title(url: str) -> str:
 
 
 
-def download_audio(url: str, output_dir: str = ".") -> Tuple[bool, str, str]:
+def get_youtube_audio_languages(url: str) -> list:
+    """
+    List the audio track languages YouTube offers for a video.
+
+    Videos with AI auto-dubbing expose several audio tracks; knowing about them
+    is the difference between transcribing the original speech and transcribing
+    a machine dub.
+
+    Returns:
+        Sorted list of language codes, empty if unavailable or single-track.
+    """
+    try:
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'ignoreerrors': True,
+            'extractor_args': {'youtube': {'player_client': ['android_vr,web_safari']}},
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            languages = {
+                fmt.get('language')
+                for fmt in (info.get('formats') or [])
+                if fmt.get('acodec') not in (None, 'none') and fmt.get('language')
+            }
+            return sorted(languages)
+    except Exception:
+        return []
+
+
+def download_audio(url: str, output_dir: str = ".", audio_lang: str = None) -> Tuple[bool, str, str]:
     """
     Download audio from YouTube and save as WAV (mono, 16kHz).
 
     Args:
         url: YouTube URL
         output_dir: Directory to save the audio file
+        audio_lang: Force a specific audio track language (None = original)
 
     Returns:
         Tuple of (success: bool, message: str, audio_path: str)
@@ -71,7 +107,14 @@ def download_audio(url: str, output_dir: str = ".") -> Tuple[bool, str, str]:
     try:
         OutputManager.info(f"Pobieranie audio z YouTube... ({url})")
 
-        cmd = build_ytdlp_audio_download_cmd(url, str(audio_file))
+        available_langs = get_youtube_audio_languages(url)
+        if len(available_langs) > 1:
+            OutputManager.info(
+                f"Film ma {len(available_langs)} ścieżek audio ({', '.join(available_langs)}) - "
+                f"pobieram {audio_lang or 'oryginalną'}"
+            )
+
+        cmd = build_ytdlp_audio_download_cmd(url, str(audio_file), audio_lang=audio_lang)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
         if result.returncode != 0:
@@ -104,7 +147,12 @@ def download_audio(url: str, output_dir: str = ".") -> Tuple[bool, str, str]:
         return False, f"Błąd przy pobieraniu: {str(e)}", ""
 
 
-def download_video(url: str, output_dir: str = ".", quality: str = "1080") -> Tuple[bool, str, str]:
+def download_video(
+    url: str,
+    output_dir: str = ".",
+    quality: str = "1080",
+    audio_lang: str = None
+) -> Tuple[bool, str, str]:
     """
     Download video from YouTube in specified quality.
 
@@ -112,6 +160,7 @@ def download_video(url: str, output_dir: str = ".", quality: str = "1080") -> Tu
         url: YouTube URL
         output_dir: Directory to save the video file
         quality: Preferred video quality (default: "1080")
+        audio_lang: Force a specific audio track language (None = original)
 
     Returns:
         Tuple of (success: bool, message: str, video_path: str)
@@ -137,7 +186,7 @@ def download_video(url: str, output_dir: str = ".", quality: str = "1080") -> Tu
     try:
         print(f"Pobieranie wideo z YouTube w jakości {quality}p... ({url})")
 
-        cmd = build_ytdlp_video_download_cmd(url, str(video_file), quality)
+        cmd = build_ytdlp_video_download_cmd(url, str(video_file), quality, audio_lang=audio_lang)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
 
         if result.returncode != 0:
@@ -174,7 +223,13 @@ def download_video(url: str, output_dir: str = ".", quality: str = "1080") -> Tu
         return False, f"Błąd przy pobieraniu wideo: {str(e)}", ""
 
 
-def extract_audio_from_video(video_path: str, output_dir: str = ".", high_quality: bool = False) -> Tuple[bool, str, str]:
+def extract_audio_from_video(
+    video_path: str,
+    output_dir: str = ".",
+    high_quality: bool = False,
+    audio_track: str = "auto",
+    preferred_language: str = None
+) -> Tuple[bool, str, str]:
     """
     Extract audio from a local video file and convert to WAV.
 
@@ -184,6 +239,9 @@ def extract_audio_from_video(video_path: str, output_dir: str = ".", high_qualit
         high_quality: If True, extract in high quality (stereo, 48kHz, 24-bit)
                      for final video output. If False, extract in low quality
                      (mono, 16kHz, 16-bit) for Whisper transcription.
+        audio_track: "auto" to pick the track automatically, or a track index
+                     (audio-relative, as reported by list_audio_streams)
+        preferred_language: ISO 639-1 code used by the automatic pick
 
     Returns:
         Tuple of (success: bool, message: str, audio_path: str)
@@ -200,7 +258,27 @@ def extract_audio_from_video(video_path: str, output_dir: str = ".", high_qualit
         quality_desc = "wysokiej jakości" if high_quality else "dla transkrypcji"
         print(f"Ekstrakcja audio ({quality_desc}) z pliku wideo... ({video_path})")
 
-        cmd = build_ffmpeg_audio_extraction_cmd(video_path, audio_file, high_quality=high_quality)
+        # Multi-track files (movie rips with dubs) need an explicit track choice
+        streams = list_audio_streams(video_path)
+        if len(streams) > 1:
+            print(f"Wykryto {len(streams)} ścieżek audio:")
+            for stream in streams:
+                print(f"  {format_audio_stream(stream)}")
+
+        if str(audio_track).lower() in ("auto", "", "none"):
+            track_index, reason = select_audio_stream(streams, preferred_language)
+        else:
+            track_index = int(audio_track)
+            reason = f"Wybrano ścieżkę #{track_index} (wskazana ręcznie)"
+
+        if len(streams) > 1:
+            print(reason)
+
+        cmd = build_ffmpeg_audio_extraction_cmd(
+            video_path, audio_file,
+            high_quality=high_quality,
+            audio_stream_index=track_index
+        )
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
 
         if result.returncode != 0:
@@ -222,7 +300,12 @@ def extract_audio_from_video(video_path: str, output_dir: str = ".", high_qualit
             sample_rate = int(output_info[1]) if len(output_info) > 1 else 0
             OutputManager.detail(f"Format audio: {channels} kanał(y), {sample_rate} Hz")
 
-        return True, f"Audio wyekstrahowane pomyślnie: {audio_file}", str(audio_file)
+        message = f"Audio wyekstrahowane pomyślnie: {audio_file}"
+        if len(streams) > 1:
+            available = "; ".join(format_audio_stream(s) for s in streams)
+            message += f"\nDostępne ścieżki audio: {available}\n{reason}"
+
+        return True, message, str(audio_file)
 
     except subprocess.TimeoutExpired:
         return False, "Błąd: Ekstrakcja audio przerwana (timeout). Spróbuj ponownie.", ""
