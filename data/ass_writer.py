@@ -8,6 +8,8 @@ in ASS format with custom styles for original and translated text.
 
 from typing import List, Tuple
 
+from .utils import strip_speaker_markers
+
 
 def format_ass_timestamp(ms: int) -> str:
     """
@@ -99,13 +101,13 @@ def write_dual_language_ass(
                 # Original language subtitle (yellow, higher)
                 f.write(
                     f"Dialogue: 0,{format_ass_timestamp(orig_start)},{format_ass_timestamp(orig_end)},"
-                    f"Original,,0,0,0,,{orig_text}\n"
+                    f"Original,,0,0,0,,{strip_speaker_markers(orig_text)}\n"
                 )
 
                 # Translated subtitle (white, lower)
                 f.write(
                     f"Dialogue: 0,{format_ass_timestamp(trans_start)},{format_ass_timestamp(trans_end)},"
-                    f"Translation,,0,0,0,,{trans_text}\n"
+                    f"Translation,,0,0,0,,{strip_speaker_markers(trans_text)}\n"
                 )
 
         return True, f"Zapisano {len(original_segments)} par napisów do pliku ASS: {output_path}"
