@@ -12,7 +12,6 @@ List[Tuple[int, int, str, float]] - (start_ms, end_ms, file_path, duration_sec)
 """
 
 import asyncio
-import re
 import subprocess
 import time
 from pathlib import Path
@@ -21,6 +20,7 @@ from tqdm import tqdm
 
 from .device_manager import detect_device, clear_cuda_cache
 from .audio_processor import get_audio_duration
+from .utils import strip_speaker_markers
 
 # Na początku pliku, po importach:
 TTS_SLOT_FILL_RATIO = 0.99  # Wypełnienie 99% czasu segmentu
@@ -340,10 +340,9 @@ def generate_tts_segments(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Diarization markers ([SPEAKER_00]) belong in the subtitles, not in the
-    # voiceover - without this the TTS engine reads "SPEAKER ZERO ZERO" aloud.
+    # Without this the TTS engine reads "SPEAKER ZERO ZERO" aloud.
     segments = [
-        (start_ms, end_ms, re.sub(r'\[SPEAKER_\d+\]\s*', '', text or '').strip())
+        (start_ms, end_ms, strip_speaker_markers(text))
         for start_ms, end_ms, text in segments
     ]
 

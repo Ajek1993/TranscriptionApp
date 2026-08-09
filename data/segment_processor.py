@@ -12,6 +12,59 @@ import re
 from typing import List, Tuple
 
 
+def collapse_repeated_phrases(text: str, max_ngram: int = 8, min_repeats: int = 3) -> Tuple[str, int]:
+    """
+    Collapse a word n-gram repeated `min_repeats`+ times in a row down to one occurrence.
+
+    Whisper/WhisperX occasionally get stuck decoding the same short phrase over
+    and over ("w porządku, w porządku, w porządku, ...") when the underlying
+    audio is ambiguous - silence, background noise/music, distant or unclear
+    speech. It's a known decoding degeneracy (nothing in the default decode
+    settings penalizes repetition), not the model inventing new content.
+    Two or three natural repeats ("nie, nie", "chodź, chodź") happen in real
+    speech, so only runs of `min_repeats` or more are touched.
+
+    Args:
+        text: Segment text to clean
+        max_ngram: Longest repeated phrase (in words) to look for
+        min_repeats: Minimum consecutive repeats before collapsing
+
+    Returns:
+        Tuple of (cleaned_text, number_of_collapsed_runs)
+    """
+    words = text.split(' ')
+    n_words = len(words)
+    result = []
+    collapsed_runs = 0
+    i = 0
+
+    while i < n_words:
+        collapsed_here = False
+        # Shortest n-gram first: that's the true repetition period. Trying
+        # longer ones first can match a multiple of the real period (e.g. a
+        # 6-word block in a run of "w porządku,") and only partially collapse
+        # the run instead of consuming all of it.
+        largest_n = min(max_ngram, (n_words - i) // min_repeats)
+        for n in range(1, largest_n + 1):
+            phrase = words[i:i + n]
+            repeats = 1
+            j = i + n
+            while j + n <= n_words and words[j:j + n] == phrase:
+                repeats += 1
+                j += n
+            if repeats >= min_repeats:
+                result.extend(phrase)
+                i = j
+                collapsed_runs += 1
+                collapsed_here = True
+                break
+        if not collapsed_here:
+            result.append(words[i])
+            i += 1
+
+    return ' '.join(result), collapsed_runs
+
+
 def split_long_segments(
     segments: List[Tuple[int, int, str]],
     max_duration_ms: int = 10000,

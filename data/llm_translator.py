@@ -17,6 +17,7 @@ from typing import Dict, List, Tuple, Optional
 
 from .output_manager import OutputManager
 from .speaker_analyzer import format_speaker_info_for_prompt
+from .utils import strip_speaker_markers
 
 
 # Environment variable names for configuration
@@ -332,7 +333,7 @@ def _restore_speaker_marker(translated: str, original: str) -> str:
     marker is re-attached whenever the model omitted or mangled it.
     """
     source_match = re.match(r'\s*(\[SPEAKER_\d+\])\s*', original)
-    translated = re.sub(r'^\s*\[SPEAKER_\d+\]\s*', '', translated)
+    translated = strip_speaker_markers(translated)
 
     if not source_match:
         return translated
