@@ -5,6 +5,10 @@ Wszystkie ważne zmiany w projekcie będą dokumentowane w tym pliku.
 ## [5.3.0] - 2026-08-09
 
 ### Naprawiono
+- **Zapętlone powtórzenia w transkrypcji** ("w porządku, w porządku, w porządku, ..." powielone kilkanaście razy) - znany artefakt dekodowania Whisper/WhisperX, gdy audio w danym fragmencie jest niejednoznaczne (cisza, szum, muzyka, niewyraźna mowa); model utyka w pętli tej samej frazy
+  - WhisperX otrzymuje teraz `repetition_penalty` i `no_repeat_ngram_size` przy dekodowaniu, żeby ograniczyć powstawanie takich pętli u źródła
+  - Dodatkowo tekst każdego segmentu (oba silniki) przechodzi przez `collapse_repeated_phrases()`, która zwija ciąg 3+ identycznych powtórzeń frazy do jednego wystąpienia
+  - Skrócone fragmenty są zgłaszane w statusie transkrypcji, żeby dało się je zweryfikować ręcznie
 - **Transkrypcja z niewłaściwej ścieżki audio** - główna przyczyna napisów „przetłumaczonych z rosyjskiego" i rozjechanych czasów
   - Ekstrakcja audio nie podawała ffmpeg opcji `-map`, więc ffmpeg sam wybierał ścieżkę: najpierw oznaczoną flagą `default`, a w razie jej braku tę o największej liczbie kanałów
   - W ripach filmowych obie te reguły wskazują na dubbing/lektora (zwykle 5.1) zamiast na oryginał 2.0

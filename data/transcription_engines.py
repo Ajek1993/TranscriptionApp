@@ -22,6 +22,16 @@ from tqdm import tqdm
 from .device_manager import detect_device, check_vram_for_model, clear_cuda_cache
 from .output_manager import OutputManager
 from .audio_processor import get_audio_duration
+from .segment_processor import collapse_repeated_phrases
+
+# Passed to WhisperX/faster-whisper decoding to curb repetition-loop
+# hallucinations (the model getting stuck repeating a phrase on ambiguous
+# audio). Defaults are repetition_penalty=1 and no_repeat_ngram_size=0 -
+# i.e. nothing discourages a loop once it starts.
+REPETITION_GUARD_ASR_OPTIONS = {
+    "repetition_penalty": 1.2,
+    "no_repeat_ngram_size": 3
+}
 
 
 def _run_with_progress(transcribe_fn, wav_path: str, segment_progress_bar: tqdm,
@@ -156,10 +166,12 @@ def transcribe_with_whisper(
 
     # Parsowanie segmentów
     segments = []
+    repetition_fixes = 0
     for segment in result["segments"]:
         start_ms = int(segment["start"] * 1000)
         end_ms = int(segment["end"] * 1000)
-        text = segment["text"].strip()
+        text, collapsed = collapse_repeated_phrases(segment["text"].strip())
+        repetition_fixes += collapsed
         segments.append((start_ms, end_ms, text))
 
     tqdm.write(f"Wykryty język: {result['language']}")
@@ -167,7 +179,14 @@ def transcribe_with_whisper(
     # Zwolnij pamięć GPU po transkrypcji
     clear_cuda_cache()
 
-    return True, f"Transkrypcja zakończona: {len(segments)} segmentów", segments
+    message = f"Transkrypcja zakończona: {len(segments)} segmentów"
+    if repetition_fixes:
+        message += (
+            f"\nOSTRZEŻENIE: Skrócono {repetition_fixes} zapętlonych powtórzeń "
+            "(typowy artefakt Whisper przy niejasnym audio - sprawdź te fragmenty)"
+        )
+
+    return True, message, segments
 
 
 def transcribe_with_whisperx(
@@ -218,14 +237,18 @@ def transcribe_with_whisperx(
             model_size,
             device=device,
             compute_type=compute_type,
-            language=language
+            language=language,
+            asr_options=REPETITION_GUARD_ASR_OPTIONS
         )
     except Exception as e:
         if device == "cuda":
             tqdm.write(f"Ostrzeżenie: Nie można użyć GPU, przełączam na CPU. Błąd: {e}")
             device = "cpu"
             compute_type = "int8"
-            model = whisperx.load_model(model_size, device="cpu", compute_type="int8")
+            model = whisperx.load_model(
+                model_size, device="cpu", compute_type="int8",
+                asr_options=REPETITION_GUARD_ASR_OPTIONS
+            )
         else:
             return False, f"Błąd podczas ładowania modelu WhisperX: {str(e)}", []
 
@@ -315,10 +338,12 @@ def transcribe_with_whisperx(
 
     # Konwersja segmentów do formatu (start_ms, end_ms, text)
     segments = []
+    repetition_fixes = 0
     for segment in result.get("segments", []):
         start_ms = int(segment["start"] * 1000)
         end_ms = int(segment["end"] * 1000)
-        text = segment["text"].strip()
+        text, collapsed = collapse_repeated_phrases(segment["text"].strip())
+        repetition_fixes += collapsed
 
         # Dodaj speaker info jeśli dostępne
         if "speaker" in segment:
@@ -340,6 +365,11 @@ def transcribe_with_whisperx(
             tqdm.write(f"Ostrzeżenie: Analiza płci nie powiodła się: {e}")
 
     message = f"Transkrypcja zakończona: {len(segments)} segmentów"
+    if repetition_fixes:
+        message += (
+            f"\nOSTRZEŻENIE: Skrócono {repetition_fixes} zapętlonych powtórzeń "
+            "(typowy artefakt Whisper przy niejasnym audio - sprawdź te fragmenty)"
+        )
     for warning in (align_warning, diarization_warning):
         if warning:
             message += f"\nOSTRZEŻENIE: {warning}"
