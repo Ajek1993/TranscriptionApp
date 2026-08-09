@@ -228,6 +228,28 @@ docker-compose run --rm transcribe --local /data/video.mp4
 python transcribe.py --local "video.mp4"
 ```
 
+**Pliki z kilkoma ścieżkami audio (dubbing / lektor):**
+
+Ripy filmowe często zawierają kilka ścieżek dźwiękowych — oryginał obok dubbingu
+lub lektora. Pozostawione ffmpeg, wybór padnie na ścieżkę oznaczoną flagą
+`default`, a w razie jej braku na tę z największą liczbą kanałów — czyli zwykle
+na dubbing, nie na oryginał. Aplikacja wybiera ścieżkę jawnie: zgodną z
+`--language`, a domyślnie pierwszą w pliku.
+
+```bash
+# Sprawdź, jakie ścieżki są w pliku
+python transcribe.py --list-audio-tracks "film.mkv"
+
+#   #0 | eng | 2 kan. | ac3 | "Original"
+#   #1 | rus | 6 kan. | ac3 | "Dubbing"
+
+# Wybierz ścieżkę ręcznie
+python transcribe.py --local "film.mkv" --audio-track 0 --translate en-pl
+```
+
+W GUI lista ścieżek pojawia się automatycznie po wczytaniu pliku, który ma ich
+więcej niż jedną.
+
 ### 2. Pobieranie bez transkrypcji
 
 **Pobierz tylko wideo:**
