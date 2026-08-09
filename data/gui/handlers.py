@@ -38,6 +38,21 @@ def cleanup_gradio_temp():
                 pass
 
 
+def _expected_audio_language(language: str, source_lang: str, enable_translation: bool) -> Optional[str]:
+    """
+    Work out which language the audio is expected to be in.
+
+    Used to pick the right track on multi-track files: the Whisper language
+    setting is the strongest signal, the translation source language the next
+    best. "auto" on both means we have nothing to go on.
+    """
+    if language and language != "auto":
+        return language
+    if enable_translation and source_lang and source_lang != "auto":
+        return source_lang
+    return None
+
+
 def handle_transcription(
     source_type: str,
     youtube_url: str,
@@ -58,6 +73,7 @@ def handle_transcription(
     llm_base_url: str = None,
     llm_api_key: str = None,
     detect_gender: bool = False,
+    audio_track: str = "auto",
     progress=gr.Progress()
 ) -> Tuple[str, Optional[str]]:
     """
@@ -83,6 +99,7 @@ def handle_transcription(
         llm_base_url: LLM API base URL
         llm_api_key: LLM API key
         detect_gender: Detect speaker gender for proper grammatical inflection
+        audio_track: Audio track to transcribe ("auto" or a track index)
         progress: Gradio progress tracker
 
     Returns:
@@ -112,8 +129,12 @@ def handle_transcription(
             status_messages.append("\n=== Pobieranie audio ===")
             progress(0.1, desc="Pobieranie audio z YouTube...")
 
-            # Download audio from YouTube
-            success, message, audio_path = download_audio(youtube_url, output_dir="files")
+            # Download audio from YouTube - original track, never an AI dub
+            success, message, audio_path = download_audio(
+                youtube_url,
+                output_dir="files",
+                audio_lang=_expected_audio_language(language, source_lang, enable_translation)
+            )
             status_messages.append(message)
 
             if not success:
@@ -140,8 +161,14 @@ def handle_transcription(
             status_messages.append("\n=== Ekstrakcja audio ===")
             progress(0.1, desc="Ekstrakcja audio z pliku...")
 
-            # Extract audio from video
-            success, message, audio_path = extract_audio_from_video(validated_path, output_dir="files")
+            # Extract audio from video - explicit track choice, so a dubbed
+            # track never wins over the original
+            success, message, audio_path = extract_audio_from_video(
+                validated_path,
+                output_dir="files",
+                audio_track=audio_track,
+                preferred_language=_expected_audio_language(language, source_lang, enable_translation)
+            )
             status_messages.append(message)
 
             if not success:
@@ -327,6 +354,8 @@ def handle_dubbing(
     transcribe_detect_gender: bool = False,
     # Korekta SRT przed dubbingiem
     correct_srt: bool = False,
+    # Wybór ścieżki audio dla plików wielościeżkowych
+    audio_track: str = "auto",
     progress=gr.Progress()
 ) -> Tuple[str, Optional[str]]:
     """
@@ -371,6 +400,7 @@ def handle_dubbing(
         transcribe_llm_api_key: LLM API key
         transcribe_detect_gender: Detect speaker gender for proper grammatical inflection
         correct_srt: Whether to run LLM correction on SRT before dubbing
+        audio_track: Audio track to transcribe ("auto" or a track index)
         progress: Gradio progress tracker
 
     Returns:
@@ -411,11 +441,14 @@ def handle_dubbing(
             status_messages.append("\n=== Pobieranie wideo ===")
             progress(0.05, desc="Pobieranie wideo z YouTube...")
 
-            # Download video
+            # Download video - original audio track, never an AI dub
             success, message, video_path_result = download_video(
                 youtube_url,
                 output_dir="files",
-                quality=video_quality
+                quality=video_quality,
+                audio_lang=_expected_audio_language(
+                    transcribe_language, transcribe_source_lang, transcribe_enable_translation
+                )
             )
             status_messages.append(message)
 
@@ -516,7 +549,14 @@ def handle_dubbing(
 
             # Ekstrakcja audio z wideo
             status_messages.append("\n--- Ekstrakcja audio ---")
-            success, message, audio_path = extract_audio_from_video(video_path, output_dir="files")
+            success, message, audio_path = extract_audio_from_video(
+                video_path,
+                output_dir="files",
+                audio_track=audio_track,
+                preferred_language=_expected_audio_language(
+                    transcribe_language, transcribe_source_lang, transcribe_enable_translation
+                )
+            )
             status_messages.append(message)
             if not success:
                 return "\n".join(status_messages), None
@@ -612,10 +652,16 @@ def handle_dubbing(
             status_messages.append("\n=== Ekstrakcja audio ===")
 
             # Extract audio for TTS processing (low quality is sufficient)
+            # Same track as the transcription, so the voiceover sits on top of
+            # the audio the subtitles were actually made from
             success, message, original_audio_path = extract_audio_from_video(
                 video_path,
                 output_dir="files",
-                high_quality=False
+                high_quality=False,
+                audio_track=audio_track,
+                preferred_language=_expected_audio_language(
+                    transcribe_language, transcribe_source_lang, transcribe_enable_translation
+                )
             )
             status_messages.append(message)
             if not success:

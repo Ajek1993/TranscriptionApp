@@ -255,6 +255,9 @@ def transcribe_with_whisperx(
         tqdm.write(f"Wykryty język: {detected_language}")
 
     # Word-level alignment (opcjonalnie)
+    # Without alignment, timestamps come from VAD chunks and drift by seconds,
+    # so a failed alignment must be reported rather than silently swallowed.
+    align_warning = None
     if align:
         tqdm.write("Wykonywanie word-level alignment...")
 
@@ -262,7 +265,8 @@ def transcribe_with_whisperx(
         align_language = language if language else detected_language
 
         if not align_language:
-            tqdm.write("Ostrzeżenie: Nie można wykonać alignment - brak informacji o języku")
+            align_warning = "Alignment POMINIĘTY - brak informacji o języku (czasy będą przybliżone)"
+            tqdm.write(f"Ostrzeżenie: {align_warning}")
         else:
             try:
                 model_a, metadata = whisperx.load_align_model(
@@ -278,12 +282,20 @@ def transcribe_with_whisperx(
                     return_char_alignments=False
                 )
             except Exception as e:
-                tqdm.write(f"Ostrzeżenie: Alignment nie powiódł się: {e}")
+                align_warning = f"Alignment NIE POWIÓDŁ SIĘ: {e} (czasy będą przybliżone)"
+                tqdm.write(f"Ostrzeżenie: {align_warning}")
 
     # Speaker diarization (opcjonalnie)
+    # Failures here are non-fatal but must stay visible - a silently skipped
+    # diarization looks identical to one that ran and found a single speaker.
+    diarization_warning = None
     if diarize:
         if not hf_token:
-            tqdm.write("Ostrzeżenie: Speaker diarization wymaga HuggingFace token (--hf-token)")
+            diarization_warning = (
+                "Diaryzacja POMINIĘTA: brak tokenu HuggingFace "
+                "(ustaw HF_TOKEN w .env lub podaj --hf-token)"
+            )
+            tqdm.write(f"Ostrzeżenie: {diarization_warning}")
         else:
             tqdm.write("Wykonywanie speaker diarization...")
             try:
@@ -298,7 +310,8 @@ def transcribe_with_whisperx(
                 )
                 result = whisperx.assign_word_speakers(diarize_segments, result)
             except Exception as e:
-                tqdm.write(f"Ostrzeżenie: Diarization nie powiódł się: {e}")
+                diarization_warning = f"Diaryzacja NIE POWIODŁA SIĘ: {e}"
+                tqdm.write(f"Ostrzeżenie: {diarization_warning}")
 
     # Konwersja segmentów do formatu (start_ms, end_ms, text)
     segments = []
@@ -326,9 +339,14 @@ def transcribe_with_whisperx(
         except Exception as e:
             tqdm.write(f"Ostrzeżenie: Analiza płci nie powiodła się: {e}")
 
+    message = f"Transkrypcja zakończona: {len(segments)} segmentów"
+    for warning in (align_warning, diarization_warning):
+        if warning:
+            message += f"\nOSTRZEŻENIE: {warning}"
+
     if detect_gender:
-        return True, f"Transkrypcja zakończona: {len(segments)} segmentów", segments, speaker_info
-    return True, f"Transkrypcja zakończona: {len(segments)} segmentów", segments
+        return True, message, segments, speaker_info
+    return True, message, segments
 
 
 def transcribe_chunk(

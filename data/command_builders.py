@@ -26,6 +26,17 @@ def build_ffprobe_video_info_cmd(file_path: str) -> list:
     ]
 
 
+def build_ffprobe_audio_streams_cmd(file_path: str) -> list:
+    """Build ffprobe command to list all audio streams with language tags (JSON)."""
+    return [
+        'ffprobe', '-v', 'error',
+        '-select_streams', 'a',
+        '-show_entries', 'stream=index,codec_name,channels,bit_rate:stream_tags=language,title',
+        '-of', 'json',
+        str(file_path)
+    ]
+
+
 def build_ffprobe_duration_cmd(file_path: str) -> list:
     """Build ffprobe command to get file duration."""
     return [
@@ -41,7 +52,8 @@ def build_ffmpeg_audio_extraction_cmd(
     output_path: str,
     sample_rate: int = 16000,
     channels: int = 1,
-    high_quality: bool = False
+    high_quality: bool = False,
+    audio_stream_index: int = 0
 ) -> list:
     """
     Build ffmpeg command to extract audio as WAV.
@@ -54,15 +66,24 @@ def build_ffmpeg_audio_extraction_cmd(
         high_quality: If True, extract in high quality (stereo, 48kHz, 24-bit)
                      for final video output. If False, extract in low quality
                      (mono, 16kHz, 16-bit) for Whisper transcription.
+        audio_stream_index: Audio-relative stream index to extract (0 = first
+                     audio track). Passed to ffmpeg as `-map 0:a:<index>`.
+                     Without an explicit -map, ffmpeg picks whichever track
+                     carries the `default` disposition, falling back to the one
+                     with the most channels. On movie rips both rules tend to
+                     land on a dubbed 5.1 track rather than the original.
 
     Returns:
         List of command arguments for ffmpeg
     """
+    stream_map = ['-map', f'0:a:{int(audio_stream_index)}']
+
     if high_quality:
         # High quality for final video output - preserve original quality
         return [
             'ffmpeg',
             '-i', str(input_path),
+            *stream_map,
             '-vn',  # No video
             '-acodec', 'pcm_s24le',  # PCM 24-bit
             '-ar', '48000',  # 48kHz sample rate
@@ -75,6 +96,7 @@ def build_ffmpeg_audio_extraction_cmd(
         return [
             'ffmpeg',
             '-i', str(input_path),
+            *stream_map,
             '-vn',  # No video
             '-acodec', 'pcm_s16le',  # PCM 16-bit
             '-ar', str(sample_rate),  # Sample rate
@@ -187,11 +209,35 @@ def build_ffmpeg_subtitle_burn_cmd(
     ]
 
 
-def build_ytdlp_audio_download_cmd(url: str, output_file: str) -> list:
+def build_ytdlp_audio_format_selector(audio_lang: str = None) -> str:
+    """
+    Build a yt-dlp format selector that avoids YouTube's dubbed audio tracks.
+
+    YouTube serves multiple audio tracks (AI auto-dubbing) on a growing number
+    of videos. A plain `bestaudio` selector can land on a dub, which then gets
+    transcribed instead of the original speech.
+
+    Args:
+        audio_lang: ISO code of a specific track to force, or None for original
+    """
+    if audio_lang and audio_lang != "auto":
+        preferred = f'ba[language^={audio_lang}]/'
+    else:
+        preferred = ''
+
+    return (
+        f'{preferred}'
+        'ba[format_note*=original][ext=m4a]/'
+        'ba[format_note*=original]/'
+        'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best'
+    )
+
+
+def build_ytdlp_audio_download_cmd(url: str, output_file: str, audio_lang: str = None) -> list:
     """Build yt-dlp command to download audio only (2026 YouTube compatible)."""
     return [
         'yt-dlp',
-        '-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+        '-f', build_ytdlp_audio_format_selector(audio_lang),
         '-x',
         '--audio-format', 'wav',
         '--audio-quality', '0',
@@ -203,9 +249,21 @@ def build_ytdlp_audio_download_cmd(url: str, output_file: str) -> list:
     ]
 
 
-def build_ytdlp_video_download_cmd(url: str, output_file: str, quality: str = "1080") -> list:
+def build_ytdlp_video_download_cmd(
+    url: str,
+    output_file: str,
+    quality: str = "1080",
+    audio_lang: str = None
+) -> list:
     """Build yt-dlp command to download video (2026 YouTube compatible)."""
-    format_str = f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={quality}][ext=webm]+bestaudio[ext=webm]/bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best"
+    # Keep the audio track consistent with build_ytdlp_audio_download_cmd -
+    # otherwise subtitles made from one track get muxed against another.
+    audio = build_ytdlp_audio_format_selector(audio_lang)
+    format_str = (
+        f"bestvideo[height<={quality}][ext=mp4]+({audio})/"
+        f"bestvideo[height<={quality}]+({audio})/"
+        f"best[height<={quality}]/best"
+    )
 
     return [
         'yt-dlp',

@@ -106,21 +106,6 @@ logger = logging.getLogger(__name__)
 # XTTS v2 supported languages
 
 
-# ===== COMMAND BUILDERS =====
-
-def build_ytdlp_video_download_cmd(url: str, output_file: str, quality: str = "1080") -> list:
-    """Build yt-dlp command to download video."""
-    format_str = f"bestvideo[height<={quality}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={quality}]+bestaudio/best[height<={quality}]/best"
-
-    return [
-        'yt-dlp',
-        '-f', format_str,
-        '--merge-output-format', 'mp4',
-        '-o', str(output_file),
-        url
-    ]
-
-
 # ===== DUBBING PIPELINE =====
 
 def run_dubbing_pipeline(
@@ -440,7 +425,7 @@ def _transcribe_all_chunks(chunk_paths: List[str], args, force_device: str = 'au
                 segment_progress_bar=segment_pbar,
                 timeout_seconds=args.transcription_timeout,
                 # WhisperX parameters
-                whisperx_align=getattr(args, 'whisperx_align', False),
+                whisperx_align=getattr(args, 'whisperx_align', True),
                 whisperx_diarize=getattr(args, 'whisperx_diarize', False),
                 whisperx_min_speakers=getattr(args, 'whisperx_min_speakers', None),
                 whisperx_max_speakers=getattr(args, 'whisperx_max_speakers', None),
@@ -623,7 +608,23 @@ def run_transcription_pipeline(audio_path: str, args, temp_dir: str) -> Tuple[bo
 
 # ===== INPUT SOURCE PROCESSING =====
 
-def _process_local_file(file_path: str, temp_dir: str) -> Tuple[bool, str, str, str, str]:
+def _expected_audio_language(args) -> str:
+    """
+    Work out which language the source audio is expected to be in.
+
+    Used to pick the right track on multi-track files: --language is the
+    strongest signal, the source side of --translate the next best.
+    """
+    if getattr(args, "language", None) and args.language != "auto":
+        return args.language
+    if getattr(args, "translate", None) and "-" in args.translate:
+        source = args.translate.split("-")[0]
+        if source != "auto":
+            return source
+    return None
+
+
+def _process_local_file(file_path: str, temp_dir: str, args) -> Tuple[bool, str, str, str, str]:
     """
     Process local video file.
 
@@ -638,8 +639,14 @@ def _process_local_file(file_path: str, temp_dir: str) -> Tuple[bool, str, str, 
     resolved_path = msg_or_path
     video_path = resolved_path
 
-    # Extract audio from local video
-    success, message, audio_path = extract_audio_from_video(resolved_path, output_dir=temp_dir)
+    # Extract audio from local video - explicit track choice, otherwise ffmpeg
+    # follows the `default` disposition, which on rips marks the dub
+    success, message, audio_path = extract_audio_from_video(
+        resolved_path,
+        output_dir=temp_dir,
+        audio_track=args.audio_track,
+        preferred_language=_expected_audio_language(args)
+    )
     if not success:
         return False, message, "", "", ""
 
@@ -672,14 +679,23 @@ def _process_youtube_url(url: str, temp_dir: str, args) -> Tuple[bool, str, str,
     # If dubbing is requested, download full video
     if args.dub and not args.dub_audio_only:
         print(f"\n=== Dubbing włączony: Pobieranie pełnego wideo ===")
-        success, message, video_path = download_video(url, output_dir=temp_dir, quality=args.video_quality)
+        audio_lang = _expected_audio_language(args)
+
+        success, message, video_path = download_video(
+            url, output_dir=temp_dir, quality=args.video_quality, audio_lang=audio_lang
+        )
         if not success:
             return False, message, "", "", ""
 
         print(message)
 
         # Extract audio from downloaded video
-        success, message, audio_path = extract_audio_from_video(video_path, output_dir=temp_dir)
+        success, message, audio_path = extract_audio_from_video(
+            video_path,
+            output_dir=temp_dir,
+            audio_track=args.audio_track,
+            preferred_language=audio_lang
+        )
         if not success:
             return False, message, "", "", ""
 
@@ -687,14 +703,18 @@ def _process_youtube_url(url: str, temp_dir: str, args) -> Tuple[bool, str, str,
     elif args.dub_audio_only:
         # Audio-only dubbing mode - just download audio
         print(f"\n=== Dubbing audio-only włączony: Pobieranie audio ===")
-        success, message, audio_path = download_audio(url, output_dir=temp_dir)
+        success, message, audio_path = download_audio(
+            url, output_dir=temp_dir, audio_lang=_expected_audio_language(args)
+        )
         if not success:
             return False, message, "", "", ""
 
         print(message)
     else:
         # Only audio needed - download audio only
-        success, message, audio_path = download_audio(url, output_dir=temp_dir)
+        success, message, audio_path = download_audio(
+            url, output_dir=temp_dir, audio_lang=_expected_audio_language(args)
+        )
         if not success:
             return False, message, "", "", ""
 
@@ -711,12 +731,36 @@ def process_input_source(args, temp_dir: str) -> Tuple[bool, str, str, str, str]
         Tuple of (success, error_msg, audio_path, video_path, input_stem)
     """
     if args.local:
-        return _process_local_file(args.local, temp_dir)
+        return _process_local_file(args.local, temp_dir, args)
     else:
         return _process_youtube_url(args.url, temp_dir, args)
 
 
 # ===== MODE HANDLERS =====
+
+def handle_list_audio_tracks_mode(args) -> int:
+    """Handle --list-audio-tracks mode (inspect audio tracks, no transcription)."""
+    from data.audio_processor import list_audio_streams, format_audio_stream
+
+    file_path = Path(args.list_audio_tracks)
+    if not file_path.exists():
+        OutputManager.error(f"Plik nie istnieje: {file_path}")
+        return 1
+
+    streams = list_audio_streams(str(file_path))
+    if not streams:
+        OutputManager.error("Nie wykryto ścieżek audio (lub ffprobe nie jest dostępny)")
+        return 1
+
+    print(f"\nŚcieżki audio w pliku {file_path.name}:")
+    for stream in streams:
+        print(f"  {format_audio_stream(stream)}")
+
+    if len(streams) > 1:
+        print("\nWybierz ścieżkę przez --audio-track N (N = numer po znaku #).")
+
+    return 0
+
 
 def handle_video_download_mode(args) -> int:
     """Handle --download mode (download video only, no transcription)."""
@@ -954,6 +998,12 @@ def main():
                        help='Jakość audio przy pobieraniu (domyślnie: best)')
     basic_group.add_argument('--subtitle-file', type=str, metavar='PATH',
                        help='Ścieżka do lokalnego pliku SRT (pomija transkrypcję, wymaga wideo i akcji --burn-subtitles lub --dub)')
+    basic_group.add_argument('--audio-track', type=str, default='auto', metavar='N',
+                       help='Numer ścieżki audio do transkrypcji w pliku wielościeżkowym '
+                            '(domyślnie: auto - ścieżka zgodna z --language, inaczej pierwsza). '
+                            'Listę ścieżek pokaże --list-audio-tracks')
+    basic_group.add_argument('--list-audio-tracks', type=str, metavar='PATH',
+                       help='Wypisz ścieżki audio pliku wideo i zakończ')
 
     # ===== OPCJE TRANSKRYPCJI =====
     transcription_group = parser.add_argument_group('Opcje transkrypcji', 'Konfiguracja modelu i języka transkrypcji')
@@ -976,7 +1026,7 @@ def main():
                        choices=['openai', 'ollama', 'anthropic'],
                        help='Provider LLM: openai (GPT), ollama (lokalny), anthropic (Claude/GLM)')
     llm_group.add_argument('--llm-model', type=str, default=None,
-                       help='Model LLM (np. gpt-4o-mini, llama3.1, GLM-4.7, claude-sonnet-4-20250514)')
+                       help='Model LLM (np. gpt-4o-mini, llama3.1, glm-5.2, claude-sonnet-4-20250514)')
     llm_group.add_argument('--llm-base-url', type=str, default=None,
                        help='Custom base URL API (np. https://api.z.ai/api/anthropic)')
     llm_group.add_argument('--llm-api-key', type=str, default=None,
@@ -987,8 +1037,9 @@ def main():
     # ===== OPCJE WHISPERX =====
     whisperx_group = parser.add_argument_group('Opcje WhisperX', 'Zaawansowane funkcje dla silnika WhisperX')
 
-    whisperx_group.add_argument('--whisperx-align', action='store_true',
-                       help='Włącz word-level alignment (dokładniejsze timestampy)')
+    whisperx_group.add_argument('--whisperx-align', action=argparse.BooleanOptionalAction, default=True,
+                       help='Word-level alignment - dokładne timestampy (domyślnie włączone). '
+                            '--no-whisperx-align przyspiesza transkrypcję kosztem precyzji czasów')
 
     whisperx_group.add_argument('--whisperx-diarize', action='store_true',
                        help='Włącz speaker diarization (rozpoznawanie mówców)')
@@ -1132,6 +1183,9 @@ def main():
         logger.debug(f"Arguments: {vars(args)}")
 
     # Handle special modes
+    if args.list_audio_tracks:
+        return handle_list_audio_tracks_mode(args)
+
     if args.download:
         return handle_video_download_mode(args)
 

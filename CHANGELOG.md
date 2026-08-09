@@ -2,6 +2,31 @@
 
 Wszystkie ważne zmiany w projekcie będą dokumentowane w tym pliku.
 
+## [5.3.0] - 2026-08-09
+
+### Naprawiono
+- **Transkrypcja z niewłaściwej ścieżki audio** - główna przyczyna napisów „przetłumaczonych z rosyjskiego" i rozjechanych czasów
+  - Ekstrakcja audio nie podawała ffmpeg opcji `-map`, więc ffmpeg sam wybierał ścieżkę: najpierw oznaczoną flagą `default`, a w razie jej braku tę o największej liczbie kanałów
+  - W ripach filmowych obie te reguły wskazują na dubbing/lektora (zwykle 5.1) zamiast na oryginał 2.0
+  - Whisper transkrybował więc obcojęzyczny dubbing, a napisy dziedziczyły jego przesunięcia czasowe
+  - Ścieżka jest teraz wybierana jawnie: zgodna z językiem źródłowym, a domyślnie pierwsza w pliku
+- **Diaryzacja gubiona przy tłumaczeniu LLM** - znaczniki `[SPEAKER_XX]` były usuwane z przetłumaczonego tekstu, przez co wynik diaryzacji przepadał; teraz są odtwarzane na podstawie oryginału
+- **Ciche pomijanie diaryzacji i alignmentu** - brak `HF_TOKEN` lub błąd alignmentu kończył się tylko wpisem w konsoli; ostrzeżenia trafiają teraz do statusu w GUI
+- **Zduplikowany `build_ytdlp_video_download_cmd`** w `transcribe.py` przesłaniał wersję z `command_builders.py`, więc CLI pobierało wideo starą komendą
+- **Znaczniki mówców czytane przez TTS** - `[SPEAKER_00]` jest usuwane przed syntezą mowy
+
+### Dodano
+- **Wybór ścieżki audio** dla plików wielościeżkowych
+  - GUI: lista ścieżek (język, kanały, kodek, tytuł) pojawia się automatycznie po wczytaniu pliku z wieloma ścieżkami
+  - CLI: `--audio-track N` oraz `--list-audio-tracks PATH`
+  - Wybrana ścieżka i pełna lista dostępnych są raportowane w statusie
+- Wymuszanie oryginalnej ścieżki audio przy pobieraniu z YouTube (obrona przed automatycznym dubbingiem AI)
+
+### Zmieniono
+- **Word-level alignment WhisperX domyślnie włączony** - bez niego timestampy pochodzą z bloków VAD i potrafią się rozjechać o sekundy (CLI: `--no-whisperx-align` przywraca poprzednie zachowanie)
+- Domyślny model GLM zaktualizowany do `glm-5.2`
+- Minimalna wersja yt-dlp podniesiona do 2026.07.04
+
 ## [5.2.0] - 2026-02-08
 
 ### Dodano
