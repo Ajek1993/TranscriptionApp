@@ -8,11 +8,15 @@ to SRT subtitle files with proper formatting.
 
 from typing import List, Tuple
 from .segment_processor import format_srt_timestamp
+from .utils import strip_speaker_markers
 
 
 def write_srt(segments: List[Tuple[int, int, str]], output_path: str) -> Tuple[bool, str]:
     """
     Write segments to an SRT file with UTF-8 encoding.
+
+    Diarization markers are stripped here: [SPEAKER_XX] is internal working
+    data, not something a viewer should ever see in the subtitles.
 
     Args:
         segments: List of (start_ms, end_ms, text) tuples
@@ -39,7 +43,7 @@ def write_srt(segments: List[Tuple[int, int, str]], output_path: str) -> Tuple[b
 
                 f.write(f"{idx}\n")
                 f.write(f"{format_srt_timestamp(start_ms)} --> {format_srt_timestamp(end_ms)}\n")
-                f.write(f"{text}\n")
+                f.write(f"{strip_speaker_markers(text)}\n")
                 f.write("\n")
 
         return True, f"Zapisano {len(segments)} segmentów do pliku SRT: {output_path}"
