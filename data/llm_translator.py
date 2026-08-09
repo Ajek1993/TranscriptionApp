@@ -323,10 +323,21 @@ def _call_anthropic_api(prompt: str, config: dict) -> str:
     return response.content[0].text
 
 
-def _strip_speaker_markers(text: str) -> str:
-    """Usuń markery mówców z tekstu."""
-    # Usuwa [SPEAKER_00], [SPEAKER_01] itp.
-    return re.sub(r'\[SPEAKER_\d+\]\s*', '', text)
+def _restore_speaker_marker(translated: str, original: str) -> str:
+    """
+    Make sure the translated line keeps the speaker marker of the original.
+
+    Diarization output is carried in the text as `[SPEAKER_XX] ...`. Dropping it
+    during translation silently throws away the diarization result, so the
+    marker is re-attached whenever the model omitted or mangled it.
+    """
+    source_match = re.match(r'\s*(\[SPEAKER_\d+\])\s*', original)
+    translated = re.sub(r'^\s*\[SPEAKER_\d+\]\s*', '', translated)
+
+    if not source_match:
+        return translated
+
+    return f"{source_match.group(1)} {translated}".strip()
 
 
 def _parse_llm_response(
@@ -348,11 +359,11 @@ def _parse_llm_response(
     """
     translated_segments = []
 
-    # Create mapping of global segment indices to (local_idx, timing)
+    # Create mapping of global segment indices to (timing, original text)
     segment_timing = {}
-    for local_idx, (start, end, _) in enumerate(original_segments):
+    for local_idx, (start, end, original_text) in enumerate(original_segments):
         global_idx = segment_offset + local_idx
-        segment_timing[global_idx] = (start, end)
+        segment_timing[global_idx] = (start, end, original_text)
 
     # Parse response line by line
     lines = response.strip().split("\n")
@@ -367,11 +378,10 @@ def _parse_llm_response(
         if match:
             seg_idx = int(match.group(1))
             text = match.group(2).strip()
-            # Remove speaker markers from translated text
-            text = _strip_speaker_markers(text)
 
             if seg_idx in segment_timing:
-                start_ms, end_ms = segment_timing[seg_idx]
+                start_ms, end_ms, original_text = segment_timing[seg_idx]
+                text = _restore_speaker_marker(text, original_text)
                 translated_segments.append((start_ms, end_ms, text))
 
     # Fallback: if parsing failed, try to match by line count
@@ -383,9 +393,8 @@ def _parse_llm_response(
             for i, line in enumerate(non_empty_lines):
                 # Remove any segment markers that might be present
                 text = re.sub(r'^\[SEG_\d+\]\s*', '', line)
-                # Remove speaker markers from translated text
-                text = _strip_speaker_markers(text)
-                start_ms, end_ms, _ = original_segments[i]
+                start_ms, end_ms, original_text = original_segments[i]
+                text = _restore_speaker_marker(text, original_text)
                 translated_segments.append((start_ms, end_ms, text))
 
     return translated_segments

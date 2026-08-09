@@ -12,6 +12,7 @@ List[Tuple[int, int, str, float]] - (start_ms, end_ms, file_path, duration_sec)
 """
 
 import asyncio
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -338,6 +339,13 @@ def generate_tts_segments(
     """
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
+
+    # Diarization markers ([SPEAKER_00]) belong in the subtitles, not in the
+    # voiceover - without this the TTS engine reads "SPEAKER ZERO ZERO" aloud.
+    segments = [
+        (start_ms, end_ms, re.sub(r'\[SPEAKER_\d+\]\s*', '', text or '').strip())
+        for start_ms, end_ms, text in segments
+    ]
 
     tts_files = []
 
