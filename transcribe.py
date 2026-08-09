@@ -1026,7 +1026,7 @@ def main():
                        choices=['openai', 'ollama', 'anthropic'],
                        help='Provider LLM: openai (GPT), ollama (lokalny), anthropic (Claude/GLM)')
     llm_group.add_argument('--llm-model', type=str, default=None,
-                       help='Model LLM (np. gpt-4o-mini, llama3.1, GLM-4.7, claude-sonnet-4-20250514)')
+                       help='Model LLM (np. gpt-4o-mini, llama3.1, glm-5.2, claude-sonnet-4-20250514)')
     llm_group.add_argument('--llm-base-url', type=str, default=None,
                        help='Custom base URL API (np. https://api.z.ai/api/anthropic)')
     llm_group.add_argument('--llm-api-key', type=str, default=None,

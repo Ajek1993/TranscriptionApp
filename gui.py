@@ -189,7 +189,7 @@ def create_interface():
                         llm_model = gr.Textbox(
                             label="Model LLM",
                             value=config.DEFAULT_LLM_MODEL,
-                            placeholder="np. gpt-4o-mini, llama3.1, GLM-4.7"
+                            placeholder="np. gpt-4o-mini, llama3.1, glm-5.2"
                         )
 
                     with gr.Row():
