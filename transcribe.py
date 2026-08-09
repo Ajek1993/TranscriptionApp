@@ -425,7 +425,7 @@ def _transcribe_all_chunks(chunk_paths: List[str], args, force_device: str = 'au
                 segment_progress_bar=segment_pbar,
                 timeout_seconds=args.transcription_timeout,
                 # WhisperX parameters
-                whisperx_align=getattr(args, 'whisperx_align', False),
+                whisperx_align=getattr(args, 'whisperx_align', True),
                 whisperx_diarize=getattr(args, 'whisperx_diarize', False),
                 whisperx_min_speakers=getattr(args, 'whisperx_min_speakers', None),
                 whisperx_max_speakers=getattr(args, 'whisperx_max_speakers', None),
@@ -1037,8 +1037,9 @@ def main():
     # ===== OPCJE WHISPERX =====
     whisperx_group = parser.add_argument_group('Opcje WhisperX', 'Zaawansowane funkcje dla silnika WhisperX')
 
-    whisperx_group.add_argument('--whisperx-align', action='store_true',
-                       help='Włącz word-level alignment (dokładniejsze timestampy)')
+    whisperx_group.add_argument('--whisperx-align', action=argparse.BooleanOptionalAction, default=True,
+                       help='Word-level alignment - dokładne timestampy (domyślnie włączone). '
+                            '--no-whisperx-align przyspiesza transkrypcję kosztem precyzji czasów')
 
     whisperx_group.add_argument('--whisperx-diarize', action='store_true',
                        help='Włącz speaker diarization (rozpoznawanie mówców)')

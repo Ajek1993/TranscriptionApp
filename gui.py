@@ -220,8 +220,10 @@ def create_interface():
                         )
 
                     whisperx_align = gr.Checkbox(
-                        label="WhisperX: Word-level alignment",
-                        value=False
+                        label="WhisperX: Word-level alignment (dokładne czasy napisów)",
+                        info="Wyłączenie przyspiesza transkrypcję, ale czasy pochodzą "
+                             "wtedy z bloków VAD i potrafią się rozjechać o sekundy",
+                        value=True
                     )
 
                     whisperx_diarize = gr.Checkbox(
