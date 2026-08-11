@@ -65,6 +65,41 @@ def collapse_repeated_phrases(text: str, max_ngram: int = 8, min_repeats: int = 
     return ' '.join(result), collapsed_runs
 
 
+_HALLUCINATION_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [
+    r'^редактор(ы)?\s+субтитров\b',
+    r'^корректор\b',
+    r'^субтитры\s+(сделал|сделала|составил|составила|подготовил|подготовила|переводил|переводила|создавал[аи]?)\b',
+    r'^(edytor|redaktor)\s+napis[oó]w\b',
+    r'^t[łl]umaczenie\s+i\s+napisy\b',
+    r'^napisy\s+(stworzone|wykonane|przygotowane)\s+przez\b',
+    r'^subtitles?\s+(by|created\s+by|made\s+by)\b',
+    r'^www\.amara\.org\b',
+]]
+
+
+def strip_known_hallucinations(text: str) -> Tuple[str, bool]:
+    """
+    Detect segments matching known Whisper hallucination templates.
+
+    Whisper was trained on huge amounts of subtitled video whose captions
+    open/close with an editor credit line ("Редактор субтитров ...",
+    "napisy stworzone przez ...", "subtitles by ..."). On silent or
+    ambiguous audio (intro silence, background music, quiet speech) it
+    reproduces that credit line instead of real content, with the name
+    varying but the surrounding template fixed - hence structural regexes
+    rather than a literal phrase list.
+
+    Returns:
+        Tuple of (text, is_hallucination). When is_hallucination is True,
+        the segment should be dropped entirely rather than kept.
+    """
+    stripped = text.strip()
+    for pattern in _HALLUCINATION_PATTERNS:
+        if pattern.match(stripped):
+            return '', True
+    return text, False
+
+
 def split_long_segments(
     segments: List[Tuple[int, int, str]],
     max_duration_ms: int = 10000,
