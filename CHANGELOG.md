@@ -2,6 +2,14 @@
 
 Wszystkie ważne zmiany w projekcie będą dokumentowane w tym pliku.
 
+## [Nieopublikowane]
+
+### Naprawiono
+- **Halucynowana stopka redakcyjna na początku napisów** (np. "Редактор субтитров Н. Новиков" / "Edytor napisów N. Nowikow") - znany artefakt Whispera: model trenowany na materiałach z taką stopką w napisach potrafi ją "wymyślić" zamiast realnej treści, gdy audio jest ciche lub niejednoznaczne (cisza/muzyka na starcie nagrania)
+  - Standardowe progi anty-halucynacyjne faster-whisper (`no_speech_threshold` itp.) nie mają efektu w trybie batched, którego używa WhisperX - jedynym skutecznym podejściem jest filtrowanie tekstu
+  - Nowa funkcja `strip_known_hallucinations()` w `data/segment_processor.py` rozpoznaje strukturalny wzorzec tej stopki (redaktor/korektor napisów + dowolne nazwisko) po rosyjsku, polsku i angielsku i usuwa cały segment, zamiast dopuszczać go do tłumaczenia i zapisu
+  - Filtr działa na oryginalnym tekście z Whispera, przed tłumaczeniem, w obu silnikach (Whisper i WhisperX); liczba usuniętych segmentów jest zgłaszana w statusie transkrypcji
+
 ## [5.3.0] - 2026-08-09
 
 ### Naprawiono

@@ -22,7 +22,7 @@ from tqdm import tqdm
 from .device_manager import detect_device, check_vram_for_model, clear_cuda_cache
 from .output_manager import OutputManager
 from .audio_processor import get_audio_duration
-from .segment_processor import collapse_repeated_phrases
+from .segment_processor import collapse_repeated_phrases, strip_known_hallucinations
 
 # Passed to WhisperX/faster-whisper decoding to curb repetition-loop
 # hallucinations (the model getting stuck repeating a phrase on ambiguous
@@ -167,11 +167,16 @@ def transcribe_with_whisper(
     # Parsowanie segmentów
     segments = []
     repetition_fixes = 0
+    hallucination_drops = 0
     for segment in result["segments"]:
         start_ms = int(segment["start"] * 1000)
         end_ms = int(segment["end"] * 1000)
         text, collapsed = collapse_repeated_phrases(segment["text"].strip())
         repetition_fixes += collapsed
+        text, is_hallucination = strip_known_hallucinations(text)
+        if is_hallucination:
+            hallucination_drops += 1
+            continue
         segments.append((start_ms, end_ms, text))
 
     tqdm.write(f"Wykryty język: {result['language']}")
@@ -184,6 +189,12 @@ def transcribe_with_whisper(
         message += (
             f"\nOSTRZEŻENIE: Skrócono {repetition_fixes} zapętlonych powtórzeń "
             "(typowy artefakt Whisper przy niejasnym audio - sprawdź te fragmenty)"
+        )
+    if hallucination_drops:
+        message += (
+            f"\nOSTRZEŻENIE: Usunięto {hallucination_drops} segment(y) rozpoznane jako typowa "
+            "halucynacja Whisper (np. fałszywa stopka \"redaktor napisów\") - sprawdź, czy w tym "
+            "miejscu w audio faktycznie jest cisza/muzyka"
         )
 
     return True, message, segments
@@ -339,11 +350,16 @@ def transcribe_with_whisperx(
     # Konwersja segmentów do formatu (start_ms, end_ms, text)
     segments = []
     repetition_fixes = 0
+    hallucination_drops = 0
     for segment in result.get("segments", []):
         start_ms = int(segment["start"] * 1000)
         end_ms = int(segment["end"] * 1000)
         text, collapsed = collapse_repeated_phrases(segment["text"].strip())
         repetition_fixes += collapsed
+        text, is_hallucination = strip_known_hallucinations(text)
+        if is_hallucination:
+            hallucination_drops += 1
+            continue
 
         # Dodaj speaker info jeśli dostępne
         if "speaker" in segment:
@@ -369,6 +385,12 @@ def transcribe_with_whisperx(
         message += (
             f"\nOSTRZEŻENIE: Skrócono {repetition_fixes} zapętlonych powtórzeń "
             "(typowy artefakt Whisper przy niejasnym audio - sprawdź te fragmenty)"
+        )
+    if hallucination_drops:
+        message += (
+            f"\nOSTRZEŻENIE: Usunięto {hallucination_drops} segment(y) rozpoznane jako typowa "
+            "halucynacja Whisper (np. fałszywa stopka \"redaktor napisów\") - sprawdź, czy w tym "
+            "miejscu w audio faktycznie jest cisza/muzyka"
         )
     for warning in (align_warning, diarization_warning):
         if warning:
