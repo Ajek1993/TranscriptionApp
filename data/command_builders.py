@@ -14,12 +14,17 @@ YTDLP_BASE_CMD = [sys.executable, '-m', 'yt_dlp']
 # default; node is enabled as a fallback (missing runtimes are skipped).
 YTDLP_JS_RUNTIMES = ['deno', 'node']
 
+# Seconds without data before a stalled connection is abandoned
+YTDLP_SOCKET_TIMEOUT = 30
+
 
 def build_ytdlp_common_args() -> list:
     """Build yt-dlp arguments shared by all YouTube download commands."""
     # No player_client override: yt-dlp's defaults track YouTube changes,
     # while pinned clients (e.g. android_vr) start demanding PO Tokens.
-    args = []
+    # --no-playlist: links like watch?v=X&list=RD... must fetch only video X,
+    # not crawl the whole (possibly endless) mix.
+    args = ['--no-playlist', '--socket-timeout', str(YTDLP_SOCKET_TIMEOUT)]
     for runtime in YTDLP_JS_RUNTIMES:
         args += ['--js-runtimes', runtime]
     return args
@@ -28,6 +33,8 @@ def build_ytdlp_common_args() -> list:
 def build_ytdlp_api_opts() -> dict:
     """Build yt_dlp.YoutubeDL options matching build_ytdlp_common_args."""
     return {
+        'noplaylist': True,
+        'socket_timeout': YTDLP_SOCKET_TIMEOUT,
         'js_runtimes': {runtime: {} for runtime in YTDLP_JS_RUNTIMES},
     }
 

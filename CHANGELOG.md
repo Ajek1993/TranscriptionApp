@@ -14,6 +14,9 @@ Wszystkie ważne zmiany w projekcie będą dokumentowane w tym pliku.
   - Włączono runtime JS (deno, a jako fallback node) do rozwiązywania wyzwań playera YouTube; zależność zmieniona na `yt-dlp[default]>=2026.08.19` (zawiera `yt-dlp-ejs`), obraz Docker zawiera deno
   - yt-dlp jest uruchamiany przez `python -m yt_dlp` zamiast `yt-dlp.exe`, którego launcher przestaje działać po przeniesieniu venv
   - Poprawiono przekazywanie opcji do API yt-dlp w `get_video_title` / `get_youtube_audio_languages` (lista klientów była podawana jako jeden string)
+- **Pobieranie z YouTube zawieszające się na 10% dla linków z playlistą** (np. `watch?v=X&list=RD...` z YouTube Mix)
+  - Odczyt tytułu filmu przechodził całą playlistę film po filmie i mógł bez końca czekać na zerwane połączenie
+  - Wszystkie wywołania yt-dlp (CLI i API) pobierają teraz tylko wskazany film (`--no-playlist`) i przerywają zablokowane połączenia po 30 s (`--socket-timeout`)
 - **Transkrypcja WhisperX w GUI kończąca się błędem "DLL load failed" (onnxruntime) na Windows**
   - `pandas<2.0` (wymagane przez Coqui TTS) dołącza stary `msvcp140.dll`; gdy gradio załaduje pandas przed WhisperX, onnxruntime nie może się zainicjalizować
   - `gui.py` ładuje teraz onnxruntime przed gradio, dzięki czemu wczytuje się właściwa biblioteka uruchomieniowa
