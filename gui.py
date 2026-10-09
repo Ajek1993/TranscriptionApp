@@ -13,6 +13,14 @@ suppress_third_party_warnings(debug_mode=False)
 from dotenv import load_dotenv
 load_dotenv()
 
+# Preload onnxruntime (used by WhisperX) before gradio pulls in pandas.
+# pandas<2.0 (pinned by Coqui TTS) bundles an old msvcp140.dll; once that is
+# loaded, onnxruntime fails later with "DLL load failed" on Windows.
+try:
+    import onnxruntime  # noqa: F401
+except ImportError:
+    pass
+
 import atexit
 import gradio as gr
 from data.gui import config
