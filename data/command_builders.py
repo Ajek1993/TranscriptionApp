@@ -3,7 +3,33 @@ Command Builders Module
 Builds command-line arguments for ffmpeg, ffprobe, and yt-dlp.
 """
 
+import sys
 from pathlib import Path
+
+# Run yt-dlp through the current interpreter - console-script launchers break
+# when a venv is moved, and this always matches the installed yt_dlp package.
+YTDLP_BASE_CMD = [sys.executable, '-m', 'yt_dlp']
+
+# YouTube needs a JS runtime to solve player challenges. deno is yt-dlp's
+# default; node is enabled as a fallback (missing runtimes are skipped).
+YTDLP_JS_RUNTIMES = ['deno', 'node']
+
+
+def build_ytdlp_common_args() -> list:
+    """Build yt-dlp arguments shared by all YouTube download commands."""
+    # No player_client override: yt-dlp's defaults track YouTube changes,
+    # while pinned clients (e.g. android_vr) start demanding PO Tokens.
+    args = []
+    for runtime in YTDLP_JS_RUNTIMES:
+        args += ['--js-runtimes', runtime]
+    return args
+
+
+def build_ytdlp_api_opts() -> dict:
+    """Build yt_dlp.YoutubeDL options matching build_ytdlp_common_args."""
+    return {
+        'js_runtimes': {runtime: {} for runtime in YTDLP_JS_RUNTIMES},
+    }
 
 
 def build_ffprobe_audio_info_cmd(file_path: str) -> list:
@@ -236,14 +262,14 @@ def build_ytdlp_audio_format_selector(audio_lang: str = None) -> str:
 def build_ytdlp_audio_download_cmd(url: str, output_file: str, audio_lang: str = None) -> list:
     """Build yt-dlp command to download audio only (2026 YouTube compatible)."""
     return [
-        'yt-dlp',
+        *YTDLP_BASE_CMD,
         '-f', build_ytdlp_audio_format_selector(audio_lang),
         '-x',
         '--audio-format', 'wav',
         '--audio-quality', '0',
         '--restrict-filenames',
         '--no-progress',
-        '--extractor-args', 'youtube:player_client=android_vr,web_safari',
+        *build_ytdlp_common_args(),
         '-o', str(output_file),
         url
     ]
@@ -266,12 +292,12 @@ def build_ytdlp_video_download_cmd(
     )
 
     return [
-        'yt-dlp',
+        *YTDLP_BASE_CMD,
         '-f', format_str,
         '--merge-output-format', 'mp4',
         '--restrict-filenames',
         '--no-progress',
-        '--extractor-args', 'youtube:player_client=android_vr,web_safari',
+        *build_ytdlp_common_args(),
         '-o', str(output_file),
         url
     ]

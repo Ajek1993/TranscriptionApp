@@ -72,6 +72,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
 
+# Deno - JS runtime yt-dlp uses to solve YouTube player challenges
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
+
 # Copy Python packages from builder (no venv - copy site-packages directly)
 COPY --from=builder /usr/local/lib/python3.11/dist-packages /usr/local/lib/python3.11/dist-packages
 COPY --from=builder /usr/local/bin /usr/local/bin

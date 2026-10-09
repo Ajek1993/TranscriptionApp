@@ -9,6 +9,11 @@ Wszystkie ważne zmiany w projekcie będą dokumentowane w tym pliku.
   - Standardowe progi anty-halucynacyjne faster-whisper (`no_speech_threshold` itp.) nie mają efektu w trybie batched, którego używa WhisperX - jedynym skutecznym podejściem jest filtrowanie tekstu
   - Nowa funkcja `strip_known_hallucinations()` w `data/segment_processor.py` rozpoznaje strukturalny wzorzec tej stopki (redaktor/korektor napisów + dowolne nazwisko) po rosyjsku, polsku i angielsku i usuwa cały segment, zamiast dopuszczać go do tłumaczenia i zapisu
   - Filtr działa na oryginalnym tekście z Whispera, przed tłumaczeniem, w obu silnikach (Whisper i WhisperX); liczba usuniętych segmentów jest zgłaszana w statusie transkrypcji
+- **Pobieranie z YouTube kończące się błędem 403** - w yt-dlp 2026.08.19 wymuszony klient `android_vr` wymaga PO Tokena, przez co pobieranie audio/wideo nie działało
+  - Usunięto nadpisywanie `player_client` - yt-dlp sam dobiera klientów, aktualizowanych razem z jego wydaniami
+  - Włączono runtime JS (deno, a jako fallback node) do rozwiązywania wyzwań playera YouTube; zależność zmieniona na `yt-dlp[default]>=2026.08.19` (zawiera `yt-dlp-ejs`), obraz Docker zawiera deno
+  - yt-dlp jest uruchamiany przez `python -m yt_dlp` zamiast `yt-dlp.exe`, którego launcher przestaje działać po przeniesieniu venv
+  - Poprawiono przekazywanie opcji do API yt-dlp w `get_video_title` / `get_youtube_audio_languages` (lista klientów była podawana jako jeden string)
 
 ## [5.3.0] - 2026-08-09
 

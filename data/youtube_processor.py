@@ -13,6 +13,7 @@ import yt_dlp
 from .command_builders import (
     build_ytdlp_audio_download_cmd,
     build_ytdlp_video_download_cmd,
+    build_ytdlp_api_opts,
     build_ffprobe_audio_info_cmd,
     build_ffprobe_video_info_cmd,
     build_ffmpeg_audio_extraction_cmd
@@ -31,7 +32,7 @@ def get_video_title(url: str) -> str:
             'quiet': True,
             'no_warnings': True,  # Tłumi wewnętrzne ostrzeżenia yt-dlp
             'ignoreerrors': True,  # Ignoruje błędy cicho
-            'extractor_args': {'youtube': {'player_client': ['android_vr,web_safari']}},
+            **build_ytdlp_api_opts(),
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -60,7 +61,7 @@ def get_youtube_audio_languages(url: str) -> list:
             'quiet': True,
             'no_warnings': True,
             'ignoreerrors': True,
-            'extractor_args': {'youtube': {'player_client': ['android_vr,web_safari']}},
+            **build_ytdlp_api_opts(),
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)

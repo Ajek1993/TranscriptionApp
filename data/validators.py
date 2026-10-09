@@ -5,6 +5,7 @@ Input validation and dependency checking.
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Tuple
 
@@ -227,7 +228,7 @@ def check_dependencies() -> Tuple[bool, str]:
 
     # Check yt-dlp
     try:
-        subprocess.run(['yt-dlp', '--version'],
+        subprocess.run([sys.executable, '-m', 'yt_dlp', '--version'],
                       capture_output=True,
                       timeout=5,
                       check=True)
@@ -244,7 +245,7 @@ def check_dependencies() -> Tuple[bool, str]:
             error_msg += "  - lub pobierz z https://ffmpeg.org/download.html\n\n"
 
         if 'yt-dlp' in missing_deps:
-            error_msg += "yt-dlp nie jest zainstalowany. Zainstaluj: pip install yt-dlp\n"
+            error_msg += "yt-dlp nie jest zainstalowany. Zainstaluj: pip install -U \"yt-dlp[default]\"\n"
 
         return False, error_msg
 

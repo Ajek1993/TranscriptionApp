@@ -6,7 +6,8 @@
 # =============================================================================
 
 # Core dependencies
-yt-dlp>=2026.07.04
+# [default] pulls in yt-dlp-ejs (YouTube JS challenge solver); needs deno or node
+yt-dlp[default]>=2026.08.19
 tqdm>=4.67.0
 deep-translator>=1.11.4
 edge-tts>=7.0.0

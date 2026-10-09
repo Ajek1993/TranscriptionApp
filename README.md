@@ -156,7 +156,9 @@ Obraz automatycznie wykrywa dostępność GPU:
 2. **ffmpeg** - do przetwarzania audio
    - Windows: `winget install FFmpeg` lub `choco install ffmpeg`
 3. **yt-dlp** - do pobierania z YouTube
-   - Instalacja: `pip install yt-dlp`
+   - Instalacja: `pip install -U "yt-dlp[default]"` (zawiera `yt-dlp-ejs`)
+4. **Deno lub Node.js** - runtime JS wymagany przez yt-dlp do obsługi YouTube
+   - Windows: `winget install DenoLand.Deno` lub Node.js 20+
 
 ### Instalacja
 
